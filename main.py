@@ -1,89 +1,67 @@
 from flask import Flask, request, jsonify
-import joblib
-import pandas as pd
-import os
+from model_service import predecir_ocupacion
+from retrain import retrain_bp
 
 app = Flask(__name__)
 
-#rutas a los archivos dentro de la carpeta models
-MODEL_PATH = os.path.join("models", "modelo_ocupacion.joblib")
-SCALER_PATH = os.path.join("models", "scaler.joblib")
-
-#carga de modelo y escalador al arrancar la aplicación
-try:
-    model = joblib.load(MODEL_PATH)
-    scaler = joblib.load(SCALER_PATH)
-    print("Modelo y Scaler cargados correctamente.")
-except Exception as e:
-    model = None
-    scaler = None
-    print(f"Error cargando archivos: {e}")
+#registrar la ruta de reentrenamiento creada por mi compañero
+app.register_blueprint(retrain_bp)
 
 
 @app.route("/", methods=["GET"])
 def home():
-    """
-    Landing page informativa requerida por el enunciado.
-    """
+    #landing page con la info de la API y los endpoints disponibles
     return jsonify({
         "proyecto": "API de Predicción de Ocupación - Spa Oasis",
-        "descripcion": "Servicio API REST para predecir el nivel o tramo de ocupación en las instalaciones del spa.",
+        "descripcion": "API REST para predecir la ocupación del spa y reentrenar el modelo",
         "endpoints": {
-            "/": "GET - Esta página de bienvenida e instrucciones",
-            "/predict": "POST - Envía un JSON con las variables del spa para obtener la predicción de ocupación"
+            "/": "GET - Mensaje de bienvenida e instrucciones",
+            "/predict": "POST - Recibe fecha (YYYY-MM-DD) y tramo (mañana/tarde) para devolver la predicción",
+            "/retrain": "POST - Ejecuta el reentrenamiento del modelo"
         }
     })
 
 
 @app.route("/predict", methods=["POST", "GET"])
 def predict():
-    """
-    Endpoint de predicción de ocupación.
-    """
-    if model is None or scaler is None:
-        return jsonify({
-            "error": "El modelo o el escalador no están disponibles en el servidor."
-        }), 500
-
     if request.method == "POST":
         data = request.get_json()
 
+        #comprobar que nos envían un JSON
         if not data:
-            return jsonify({"error": "No se proporcionaron datos en formato JSON"}), 400
+            return jsonify({"error": "No se enviaron datos en la petición"}), 400
+
+        #guardar las variables del formulario/front
+        fecha = data.get("fecha")
+        tramo = data.get("tramo")
+
+        #validar que no falte ningún campo
+        if not fecha or not tramo:
+            return jsonify({
+                "error": "Faltan datos obligatorios. Debes enviar 'fecha' (YYYY-MM-DD) y 'tramo' ('mañana' o 'tarde')."
+            }), 400
 
         try:
-            #se convierte el JSON recibido a DataFrame
-            #si se envía un solo registro como dict {} -> [data]
-            #si se envía una lista de dicts [{}] -> data
-            if isinstance(data, dict):
-                input_df = pd.DataFrame([data])
-            elif isinstance(data, list):
-                input_df = pd.DataFrame(data)
-            else:
-                return jsonify({"error": "Formato JSON no válido"}), 400
-
-            #se aplica la transformación del scaler
-            scaled_features = scaler.transform(input_df)
-
-            #se realiza la predicción
-            predictions = model.predict(scaled_features)
-
-            #se convierte a lista nativa de python para serializar en JSON
-            results = predictions.tolist()
+            #llamada a la función de predicción de model_service
+            resultado = predecir_ocupacion(fecha, tramo)
 
             return jsonify({
                 "status": "success",
-                "prediccion_ocupacion": results[0] if len(results) == 1 else results
+                "resultado": resultado
             })
 
+        except ValueError as e:
+            #errores de validación de fechas o tramos
+            return jsonify({"error": str(e)}), 400
+        except RuntimeError as e:
+            #errores en caso de que el modelo no esté disponible
+            return jsonify({"error": str(e)}), 500
         except Exception as e:
-            return jsonify({
-                "error": f"Error al procesar la predicción: {str(e)}"
-            }), 400
+            return jsonify({"error": f"Error inesperado procesando la predicción: {str(e)}"}), 500
 
-    #respuesta informativa si se accede por GET al endpoint /predict
+    #mensaje por si se accede a /predict usando GET
     return jsonify({
-        "mensaje": "Para realizar una predicción, envía una petición POST con los datos en formato JSON a este endpoint."
+        "mensaje": "Envía una petición POST con 'fecha' y 'tramo' en formato JSON para obtener una predicción."
     })
 
 
