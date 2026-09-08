@@ -1,159 +1,135 @@
 """
-Endpoint de reentrenamiento del modelo (extra voluntario del enunciado).
+Ingesta del CSV de reentrenamiento (extra voluntario del enunciado).
 
-Se define como un **Blueprint** de Flask en vez de escribirlo dentro de
-`main.py` a propósito: así el lane de reentrenamiento no toca el fichero que
-están editando a la vez los demás roles, y la integración se reduce a dos
-líneas en `main.py`:
+Este módulo no define rutas: el enrutado vive entero en `main.py`. Aquí está
+solo la lógica de qué hacer con el CSV que llega — validarlo, añadirlo al
+histórico de `data/` y lanzar el reentrenamiento de `train_model.py` — y la
+traducción del informe técnico a la respuesta que espera el frontend.
 
-    from retrain import retrain_bp
-    app.register_blueprint(retrain_bp)
+Decisiones importantes:
 
-Para probarlo por separado, sin depender de `main.py`:
-
-    python retrain.py           # -> http://127.0.0.1:5001/retrain
+* **El CSV subido se suma al histórico, no lo reemplaza.** Se guarda como un
+  fichero más de `data/` con un nombre que ordena después del dataset base,
+  porque `cargar_datasets()` deduplica con `keep="last"`: así una subida puede
+  corregir cifras del histórico sin editar el fichero original a mano.
+* **Si el modelo nuevo no se publica, el CSV se retira.** `data/` solo
+  contiene datos que han producido un modelo aceptado, de modo que el
+  histórico que se muestra en el gráfico y el que entrena el modelo son el
+  mismo.
 """
+import datetime as dt
+import io
 import os
 import threading
 
-from flask import Blueprint, jsonify, request
+import pandas as pd
 
 import train_model
+from model_service import obtener_artefacto
 from train_model import ErrorDeReentrenamiento, ReentrenamientoEnCurso, reentrenar
-from werkzeug.exceptions import BadRequest
-
-retrain_bp = Blueprint("reentrenamiento", __name__)
 
 # Un reentrenamiento a la vez: si llegan dos peticiones simultáneas, la segunda
 # recibe un 409 en vez de pelearse con la primera por escribir el mismo fichero.
 _candado = threading.Lock()
 
-# Token opcional. Si la variable de entorno está definida (en Render, no en el
-# código — como pide el enunciado), /retrain exige la cabecera X-Retrain-Token.
-# Si no está definida, el endpoint queda abierto, que es lo cómodo para la demo
-# en clase.
-NOMBRE_CABECERA_TOKEN = "X-Retrain-Token"
 
-
-def _token_valido():
-    esperado = os.environ.get("RETRAIN_TOKEN")
-    if not esperado:
-        return True
-    return request.headers.get(NOMBRE_CABECERA_TOKEN) == esperado
-
-
-@retrain_bp.route("/retrain", methods=["GET"])
-def info_retrain():
-    """Documentación del endpoint y estado del modelo desplegado ahora mismo."""
-    import joblib
-
-    modelo_actual = {"disponible": False}
-    if os.path.exists(train_model.MODEL_PATH):
-        try:
-            art = joblib.load(train_model.MODEL_PATH)
-            modelo_actual = {
-                "disponible": True,
-                "algoritmo": art.get("nombre"),
-                "entrenado_hasta": art.get("entrenado_hasta"),
-                "mae": art.get('validacion', {}).get('mae', art.get('mae_cv')),
-                "version_modelo": art.get('version', 'original'),
-                "reentrenado_el": art.get("reentrenado_el", "nunca (artefacto original)"),
-            }
-        except Exception as e:
-            modelo_actual = {"disponible": False, "error": str(e)}
-
-    return jsonify({
-        "endpoint": "/retrain",
-        "descripcion": (
-            "Reentrena el modelo de ocupación con todos los CSV presentes en "
-            "data/. Para lanzarlo, haz una petición POST a esta misma URL."
-        ),
-        "como_usarlo": {
-            "metodo": "POST",
-            "cuerpo": "no hace falta ninguno",
-            "opcional": {
-                "dias_validacion": (
-                    "entero, días finales reservados para validar "
-                    "(por defecto " + str(train_model.DIAS_VALIDACION) + ")"
-                )
-            },
-            "cabecera": (
-                NOMBRE_CABECERA_TOKEN + " si el servidor tiene RETRAIN_TOKEN configurado"
-            ),
-            "ejemplo": "curl -X POST https://<tu-app>.onrender.com/retrain",
-        },
-        "datasets_detectados": [
-            os.path.basename(r) for r in train_model.listar_datasets()
-        ],
-        "modelo_actual": modelo_actual,
-        "aviso": (
-            "En el plan gratuito de Render el disco es efímero: el modelo "
-            "reentrenado se pierde cuando el servicio se reinicia o se duerme, "
-            "y se vuelve al artefacto versionado en el repositorio."
-        ),
-    })
-
-
-@retrain_bp.route("/retrain", methods=["POST"])
-def lanzar_retrain():
-    """Reentrena el modelo y devuelve el informe de lo ocurrido."""
-    if not _token_valido():
-        return jsonify({
-            "error": "No autorizado.",
-            "detalle": (
-                "Este servidor tiene el reentrenamiento protegido: falta la "
-                "cabecera " + NOMBRE_CABECERA_TOKEN + " o su valor no es correcto."
-            ),
-        }), 401
-
-    if request.get_data() and not request.is_json:
-        return jsonify({'error': 'El cuerpo debe ser JSON.'}), 400
+def info_modelo(model_path=None):
+    """Estado del artefacto desplegado ahora mismo (para GET /retrain)."""
     try:
-        datos = request.get_json() if request.get_data() else {}
-    except BadRequest:
-        return jsonify({'error': 'JSON mal formado.'}), 400
-    if not isinstance(datos, dict):
-        return jsonify({'error': 'El cuerpo JSON debe ser un objeto.'}), 400
-    dias = datos.get("dias_validacion", train_model.DIAS_VALIDACION)
-    if type(dias) is not int:
-        return jsonify({
-            "error": "El campo 'dias_validacion' debe ser un número entero.",
-            "recibido": datos.get("dias_validacion"),
-        }), 400
-    if dias < 7:
-        return jsonify({
-            "error": "'dias_validacion' debe ser al menos 7 para que la validación tenga sentido.",
-            "recibido": dias,
-        }), 400
+        art = obtener_artefacto(model_path)
+    except RuntimeError as exc:
+        return {'disponible': False, 'error': str(exc)}
+    mae = art.get('validacion', {}).get('mae', art.get('mae_cv'))
+    return {
+        'disponible': True,
+        'algoritmo': art.get('nombre'),
+        'entrenado_hasta': art.get('entrenado_hasta'),
+        # float() explícito: mae_cv viene del entrenamiento como np.float64 y
+        # jsonify no sabe serializar escalares de numpy.
+        'mae': None if mae is None else round(float(mae), 3),
+        'version_modelo': art.get('version', 'original'),
+        'reentrenado_el': art.get('reentrenado_el', 'nunca (artefacto original)'),
+    }
+
+
+def parsear_y_validar(csv_texto):
+    """Texto CSV -> rejilla validada con las mismas reglas que los CSV de data/."""
+    try:
+        df = pd.read_csv(io.StringIO(csv_texto))
+    except (pd.errors.ParserError, pd.errors.EmptyDataError, UnicodeError) as exc:
+        raise ErrorDeReentrenamiento('El CSV no se ha podido leer.') from exc
+    if 'tramo' in df.columns:
+        # Tolerante en la entrada (el frontend manda 'manana' sin ñ), canónico
+        # en el disco. Un valor desconocido se deja intacto para que sea
+        # validar_dataset quien dé el error, y no dos mensajes distintos.
+        df['tramo'] = df['tramo'].astype(str).str.strip().str.lower().replace({'manana': 'mañana'})
+    return train_model.validar_dataset(df, 'CSV recibido')
+
+
+def _persistir(df, data_dir):
+    """Guarda el CSV recibido en data/, de forma atómica y ordenable."""
+    sello = dt.datetime.now().strftime('%Y%m%d_%H%M%S_%f')
+    # El nombre tiene que ordenar DESPUÉS de ocupacion_tramos.csv: listar_datasets()
+    # ordena alfabéticamente y cargar_datasets() deduplica con keep="last".
+    destino = os.path.join(str(data_dir), 'subida_' + sello + '.csv')
+    temporal = destino + '.tmp'  # .tmp para que listar_datasets() no lo vea a medio escribir
+    # validar_dataset devuelve fecha_cita como datetime y n_citas como float; si
+    # se volcaran así, la validación estricta de la siguiente lectura los
+    # rechazaría ('2026-07-01 00:00:00' y '12.0').
+    df.assign(
+        fecha_cita=df['fecha_cita'].dt.strftime('%Y-%m-%d'),
+        n_citas=df['n_citas'].astype(int),
+    ).to_csv(temporal, index=False, encoding='utf-8')
+    os.replace(temporal, destino)
+    return destino
+
+
+def ingerir_y_reentrenar(csv_texto, data_dir=None, dias_validacion=None):
+    """Valida el CSV, lo añade al histórico y reentrena con todo lo que haya."""
+    data_dir = data_dir or train_model.DATA_DIR
+    df = parsear_y_validar(csv_texto)
+    filas = int(len(df))
 
     if not _candado.acquire(blocking=False):
-        return jsonify({
-            "error": "Ya hay un reentrenamiento en curso. Espera a que termine.",
-        }), 409
-
+        raise ReentrenamientoEnCurso('Ya hay un reentrenamiento en curso. Espera a que termine.')
     try:
-        informe = reentrenar(dias_validacion=dias)
-    except ReentrenamientoEnCurso as e:
-        return jsonify({'error': str(e)}), 409
-    except ErrorDeReentrenamiento as e:
-        return jsonify({"error": "No se ha podido reentrenar.", "detalle": str(e)}), 400
-    except Exception as e:
-        return jsonify({
-            "error": "Error inesperado durante el reentrenamiento.",
-            "detalle": "{}: {}".format(type(e).__name__, e),
-        }), 500
+        destino = _persistir(df, data_dir)
+        try:
+            informe = reentrenar(
+                data_dir=data_dir,
+                dias_validacion=dias_validacion or train_model.DIAS_VALIDACION,
+            )
+        except Exception:
+            os.unlink(destino)
+            raise
+        if informe['estado'] != 'reemplazado':
+            os.unlink(destino)
     finally:
         _candado.release()
 
-    codigo = 200 if informe["estado"] == "reemplazado" else 409
-    return jsonify(informe), codigo
+    return _a_respuesta(informe, filas)
 
 
-if __name__ == "__main__":
-    # Servidor de desarrollo solo para probar este lane por separado, sin
-    # depender de main.py. En producción manda main.py + gunicorn.
-    from flask import Flask
-
-    app = Flask(__name__)
-    app.register_blueprint(retrain_bp)
-    app.run(port=5001, debug=True)
+def _a_respuesta(informe, filas):
+    """Informe técnico del reentrenamiento -> {status, rowsIngested, message}."""
+    if informe['estado'] == 'reemplazado':
+        validacion = informe['validacion']
+        return {
+            'status': 'ok',
+            'rowsIngested': filas,
+            'message': (
+                'Se han incorporado {} filas y el modelo se ha reentrenado correctamente. '
+                'MAE de validación {:.2f} (baseline {:.2f}). Modelo entrenado hasta {}.'.format(
+                    filas, validacion['mae'], validacion['mae_baseline'],
+                    informe['entrenado_hasta'],
+                )
+            ),
+        }
+    return {
+        'status': 'error',
+        'rowsIngested': filas,
+        'message': (
+            'Se han recibido {} filas, pero el modelo NO se ha reemplazado: {} '
+            'Los datos enviados se han descartado.'.format(filas, informe.get('motivo', ''))
+        ),
+    }

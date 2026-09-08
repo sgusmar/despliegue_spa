@@ -41,7 +41,7 @@ from sklearn.preprocessing import StandardScaler
 
 from utils.feature_engineering import construir_features_df
 from utils.preprocessing import build_features
-from model_service import cargar_artefacto, predecir_features
+from model_service import cargar_artefacto, invalidar_cache, predecir_features
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(BASE_DIR, "data")
@@ -122,6 +122,39 @@ def listar_datasets(data_dir=DATA_DIR):
     return rutas
 
 
+def validar_dataset(df, nombre="dataset"):
+    """
+    Comprueba el contrato de columnas y devuelve la rejilla normalizada.
+
+    La usan tanto la lectura de los CSV de data/ como la ingesta del CSV que
+    llega por /retrain, para que un fichero subido se valide exactamente con
+    las mismas reglas con las que se leerá después desde disco.
+    """
+    if df.empty:
+        raise ErrorDeReentrenamiento(nombre + ': dataset vacío.')
+    faltan = [c for c in COLUMNAS_REQUERIDAS if c not in df.columns]
+    if faltan:
+        raise ErrorDeReentrenamiento(
+            "{}: faltan las columnas {}. Se esperan al menos {}.".format(
+                nombre, faltan, COLUMNAS_REQUERIDAS
+            )
+        )
+    df = df[COLUMNAS_REQUERIDAS].copy()
+    if not df['fecha_cita'].astype(str).str.fullmatch(r'\d{4}-\d{2}-\d{2}').all():
+        raise ErrorDeReentrenamiento('fecha_cita debe tener formato YYYY-MM-DD.')
+    df["fecha_cita"] = pd.to_datetime(df["fecha_cita"], format='%Y-%m-%d', errors="coerce")
+    if df["fecha_cita"].isna().any():
+        raise ErrorDeReentrenamiento(nombre + ": hay fechas que no se han podido leer.")
+    if df['fecha_cita'].dt.tz is not None or (df['fecha_cita'] != df['fecha_cita'].dt.normalize()).any():
+        raise ErrorDeReentrenamiento('Las fechas deben ser días sin hora ni zona horaria.')
+    if not df['tramo'].isin(['mañana', 'tarde']).all():
+        raise ErrorDeReentrenamiento('tramo debe ser mañana o tarde.')
+    df['n_citas'] = pd.to_numeric(df['n_citas'], errors='coerce')
+    if not (np.isfinite(df['n_citas']) & (df['n_citas'] >= 0) & (df['n_citas'] % 1 == 0)).all():
+        raise ErrorDeReentrenamiento('n_citas debe contener enteros no negativos y finitos.')
+    return df
+
+
 def cargar_datasets(data_dir=DATA_DIR):
     """
     Concatena todos los CSV de data/ en una única rejilla fecha x tramo.
@@ -138,41 +171,52 @@ def cargar_datasets(data_dir=DATA_DIR):
 
     trozos, informe = [], []
     for ruta in rutas:
+        nombre = os.path.basename(ruta)
         try:
             df = pd.read_csv(ruta)
         except (pd.errors.ParserError, pd.errors.EmptyDataError, UnicodeError) as exc:
-            raise ErrorDeReentrenamiento(os.path.basename(ruta) + ': CSV inválido.') from exc
-        if df.empty:
-            raise ErrorDeReentrenamiento(os.path.basename(ruta) + ': dataset vacío.')
-        faltan = [c for c in COLUMNAS_REQUERIDAS if c not in df.columns]
-        if faltan:
-            raise ErrorDeReentrenamiento(
-                "{}: faltan las columnas {}. Se esperan al menos {}.".format(
-                    os.path.basename(ruta), faltan, COLUMNAS_REQUERIDAS
-                )
-            )
-        df = df[COLUMNAS_REQUERIDAS].copy()
-        if not df['fecha_cita'].astype(str).str.fullmatch(r'\d{4}-\d{2}-\d{2}').all():
-            raise ErrorDeReentrenamiento('fecha_cita debe tener formato YYYY-MM-DD.')
-        df["fecha_cita"] = pd.to_datetime(df["fecha_cita"], format='%Y-%m-%d', errors="coerce")
-        if df["fecha_cita"].isna().any():
-            raise ErrorDeReentrenamiento(
-                os.path.basename(ruta) + ": hay fechas que no se han podido leer."
-            )
-        if df['fecha_cita'].dt.tz is not None or (df['fecha_cita'] != df['fecha_cita'].dt.normalize()).any():
-            raise ErrorDeReentrenamiento('Las fechas deben ser días sin hora ni zona horaria.')
-        if not df['tramo'].isin(['mañana', 'tarde']).all():
-            raise ErrorDeReentrenamiento('tramo debe ser mañana o tarde.')
-        df['n_citas'] = pd.to_numeric(df['n_citas'], errors='coerce')
-        if not (np.isfinite(df['n_citas']) & (df['n_citas'] >= 0) & (df['n_citas'] % 1 == 0)).all():
-            raise ErrorDeReentrenamiento('n_citas debe contener enteros no negativos y finitos.')
+            raise ErrorDeReentrenamiento(nombre + ': CSV inválido.') from exc
+        df = validar_dataset(df, nombre)
         trozos.append(df)
-        informe.append({"fichero": os.path.basename(ruta), "filas": int(len(df))})
+        informe.append({"fichero": nombre, "filas": int(len(df))})
 
     completo = pd.concat(trozos, ignore_index=True)
     completo = completo.drop_duplicates(subset=["fecha_cita", "tramo"], keep="last")
     completo = completo.sort_values(["fecha_cita", "tramo"]).reset_index(drop=True)
     return completo, informe
+
+
+_historico = {'clave': None, 'df': None}
+
+
+def _clave_datos(data_dir):
+    """Huella de los CSV de data/, para saber si el histórico cacheado sigue vigente."""
+    huella = []
+    for ruta in listar_datasets(data_dir):
+        estado = os.stat(ruta)
+        huella.append((os.path.basename(ruta), estado.st_mtime_ns, estado.st_size))
+    return tuple(huella)
+
+
+def cargar_historico(data_dir=DATA_DIR):
+    """
+    Rejilla fecha x tramo real, ya validada y deduplicada, cacheada en memoria.
+
+    Reutiliza cargar_datasets() a propósito: así el histórico que se muestra en
+    el gráfico incluye automáticamente lo que se haya subido por /retrain, y no
+    hay dos caminos distintos de leer los mismos datos.
+    """
+    clave = _clave_datos(data_dir)
+    if _historico['clave'] != clave:
+        df, _ = cargar_datasets(data_dir)
+        _historico['clave'], _historico['df'] = clave, df
+    return _historico['df']
+
+
+def historico_por_rango(desde, hasta, data_dir=DATA_DIR):
+    """Ocupación observada entre dos fechas, ambas incluidas (copia, no vista)."""
+    df = cargar_historico(data_dir)
+    return df[(df['fecha_cita'] >= desde) & (df['fecha_cita'] <= hasta)]
 
 
 def preparar_xy(df):
@@ -268,7 +312,12 @@ def _guardar_copia_de_seguridad():
     shutil.copy2(MODEL_PATH, destino)
     if os.path.exists(SCALER_PATH):
         shutil.copy2(SCALER_PATH, os.path.join(BACKUP_DIR, "scaler_" + sello + ".joblib"))
-    return os.path.relpath(destino, BASE_DIR).replace(os.sep, "/")
+    try:
+        return os.path.relpath(destino, BASE_DIR).replace(os.sep, "/")
+    except ValueError:
+        # En Windows relpath revienta si destino y BASE_DIR están en unidades
+        # distintas (pasa en los tests, con el tmp en C: y el repo en D:).
+        return destino.replace(os.sep, "/")
 
 
 def reentrenar(data_dir=DATA_DIR, dias_validacion=DIAS_VALIDACION):
@@ -346,6 +395,9 @@ def _reentrenar(data_dir, dias_validacion):
         joblib.dump(artefacto, temporal)
         cargar_artefacto(temporal)
         os.replace(temporal, MODEL_PATH)
+        # El mtime del fichero ya bastaría, pero invalidar explícitamente cubre
+        # también el uso por CLI (python train_model.py) dentro del mismo proceso.
+        invalidar_cache()
     finally:
         if os.path.exists(temporal):
             os.unlink(temporal)

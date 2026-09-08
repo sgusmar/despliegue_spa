@@ -1,6 +1,8 @@
 # src/preprocessing.py
 import pandas as pd
-import numpy as np
+
+from utils.feature_engineering import FECHA_REFERENCIA
+
 
 def build_features(df):
     """
@@ -17,8 +19,7 @@ def build_features(df):
     data['fecha_cita'] = pd.to_datetime(data['fecha_cita'])
     
     #Variable de tendencia: Días transcurridos desde el inicio (Mayo 2024)
-    fecha_min_global = pd.to_datetime("2024-05-09")
-    data['dias_desde_inicio'] = (data['fecha_cita'] - fecha_min_global).dt.days
+    data['dias_desde_inicio'] = (data['fecha_cita'] - FECHA_REFERENCIA).dt.days
     
     #One-Hot Encoding para las nuevas categorías estratégicas
     columnas_encoding = [col for col in ['grupo_dia', 'temporada'] if col in data.columns]

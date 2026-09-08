@@ -5,10 +5,9 @@ negocio a partir de una fecha (y, cuando aplica, un tramo horario).
 
 Cada función es una transformación pura: solo depende de la fecha/tramo de
 entrada y de constantes fijas (festivos, fechas comerciales, cierres) — nunca
-de un histórico de reservas. Por eso la misma función sirve tanto para
-construir `train`/`test` sobre todo el histórico (`construir_features_df`)
-como para calcular el input de una predicción real futura, fecha a fecha
-(`construir_features`). Usar siempre estas funciones en los dos sitios evita
+de un histórico de reservas. Por eso `construir_features_df` sirve igual para
+montar `train`/`test` sobre todo el histórico que para calcular el input de
+una predicción futura. Usar siempre estas funciones en los dos sitios evita
 que el cálculo de "cómo se entrenó" y el de "cómo se predice" diverjan con el
 tiempo (training-serving skew).
 """
@@ -19,9 +18,6 @@ import holidays
 # Es una constante fija, no se recalcula — en producción tiene que ser siempre
 # la misma que se usó al entrenar el modelo.
 FECHA_REFERENCIA = pd.Timestamp('2024-05-09')
-
-# Hora de corte entre el tramo "mañana" y el tramo "tarde"
-CORTE_TARDE_MIN = 14 * 60  # 14:00 en minutos desde medianoche
 
 # Calendario oficial de festivos de Andalucía — se expande automáticamente
 # para cualquier año que se consulte, no hace falta fijar un rango de años.
@@ -44,13 +40,6 @@ MESES_A_TEMPORADA = {
     6: 'verano', 7: 'verano', 8: 'verano',
     9: 'otoño', 10: 'otoño', 11: 'otoño',
 }
-
-
-def tramo_desde_hora(hora_str):
-    """'mañana' o 'tarde' a partir de una hora 'HH:MM', corte a las 14:00."""
-    h, m = hora_str.split(':')
-    minutos = int(h) * 60 + int(m)
-    return 'tarde' if minutos >= CORTE_TARDE_MIN else 'mañana'
 
 
 def _grupo_dia(dia_semana):
@@ -149,8 +138,8 @@ def construir_features_df(df, fecha_referencia=FECHA_REFERENCIA):
     mantener separados calendario (fase de Transformación) y negocio (fase de
     Feature Engineering, con variables que nacen de lo que mostró la EDA), tal
     como reflejan los dos notebooks. Esta versión combinada es para
-    producción: dada una fecha real a predecir, construye de un tirón la fila
-    completa que espera el modelo — ver `construir_features`.
+    producción: dadas las fechas a predecir, construye de un tirón las filas
+    completas que espera el modelo.
     """
     df = df.copy()
     df['fecha_cita'] = pd.to_datetime(df['fecha_cita'])
@@ -162,16 +151,3 @@ def construir_features_df(df, fecha_referencia=FECHA_REFERENCIA):
     df = anadir_vispera_y_comercial(df)
     df = anadir_cierre(df)
     return df
-
-
-def construir_features(fecha, tramo):
-    """
-    Construye la fila de features para una única fecha + tramo — la función
-    a usar en producción para predecir: input = una fecha real y el tramo
-    ('mañana' o 'tarde', hay que elegir uno — no se puede derivar de la
-    fecha), output = todas las columnas que espera el modelo, salvo
-    `n_citas` (el target, que no existe todavía para una fecha futura).
-    Para un día completo, se llama dos veces, una por tramo.
-    """
-    fila = pd.DataFrame({'fecha_cita': [pd.Timestamp(fecha)], 'tramo': [tramo]})
-    return construir_features_df(fila).iloc[0]

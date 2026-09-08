@@ -233,6 +233,9 @@ models/backup/
 models/.retrain.lock
 models/.modelo_*.joblib
 
+# CSV subidos por /retrain: son datos de runtime, no del repositorio
+data/subida_*.csv
+
 # Export crudo del sistema de reservas: contiene datos personales (RGPD).
 # Nunca debe entrar al repositorio.
 *_NOUP*

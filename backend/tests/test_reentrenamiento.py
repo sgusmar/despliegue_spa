@@ -1,4 +1,6 @@
+import io
 import multiprocessing
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -6,11 +8,15 @@ from unittest.mock import patch
 
 import joblib
 import pandas as pd
-from flask import Flask
 
+import main
 import model_service as servicio
 import retrain
 import train_model as t
+
+CSV_NUEVO = 'fecha_cita,tramo,n_citas\n2026-07-01,manana,3\n2026-07-01,tarde,5\n'
+INFORME_OK = {'estado': 'reemplazado', 'entrenado_hasta': '2026-07-01',
+              'validacion': {'mae': 1.2, 'mae_baseline': 2.4}}
 
 
 def intentar_reserva(directorio, cola):
@@ -42,11 +48,11 @@ class ReentrenamientoTests(unittest.TestCase):
         art = servicio.cargar_artefacto(self.model)
         self.assertIn('scaler', art)
         self.assertEqual(art['version'], informe['version_modelo'])
-        with patch.object(servicio, 'cargar_artefacto', side_effect=lambda: servicio.joblib.load(self.model)):
-            pred = servicio.predecir_ocupacion('2026-09-10', 'tarde')
-            self.assertEqual(pred['version_modelo'], art['version'])
-            self.assertGreaterEqual(pred['prediccion_ocupacion'], 0)
-            self.assertEqual(servicio.predecir_ocupacion('2026-12-25', 'mañana')['prediccion_ocupacion'], 0)
+        pred = servicio.predecir_ocupacion('2026-09-10', 'tarde', model_path=self.model)
+        self.assertEqual(pred['version_modelo'], art['version'])
+        self.assertGreaterEqual(pred['prediccion_ocupacion'], 0)
+        self.assertEqual(servicio.predecir_ocupacion(
+            '2026-12-25', 'mañana', model_path=self.model)['prediccion_ocupacion'], 0)
         contenido = self.model.read_bytes()
         with self.assertRaises(t.ErrorDeReentrenamiento):
             t.reentrenar()
@@ -93,22 +99,66 @@ class ReentrenamientoTests(unittest.TestCase):
                 with self.assertRaises(t.ErrorDeReentrenamiento):
                     t.cargar_datasets(self.root)
 
+    def test_cache_del_artefacto_se_reutiliza_y_se_invalida(self):
+        primero = servicio.obtener_artefacto(self.model)
+        self.assertIs(servicio.obtener_artefacto(self.model), primero)
+        # utime en vez de reescribir: así no depende de la resolución del reloj.
+        marca = os.stat(self.model).st_mtime_ns + 2_000_000_000
+        os.utime(self.model, ns=(marca, marca))
+        self.assertIsNot(servicio.obtener_artefacto(self.model), primero)
+
     def test_http_invalido_y_token(self):
-        app = Flask(__name__)
-        app.register_blueprint(retrain.retrain_bp)
-        cliente = app.test_client()
+        cliente = main.create_app(data_dir=self.root, model_path=self.model).test_client()
         with patch.dict('os.environ', {'RETRAIN_TOKEN': ''}), patch.object(retrain, 'reentrenar') as entrenar:
-            for payload in [[], [1], None, {'dias_validacion': 7.5}, {'dias_validacion': True},
-                            {'dias_validacion': '60'}, {'dias_validacion': 6}]:
-                import json
-                self.assertEqual(cliente.post('/retrain', data=json.dumps(payload), content_type='application/json').status_code, 400)
+            self.assertEqual(cliente.post('/retrain').status_code, 400)            # sin cuerpo
+            self.assertEqual(cliente.post('/retrain', json={}).status_code, 400)   # sin csvText
+            self.assertEqual(cliente.post('/retrain', json=[1]).status_code, 400)
             self.assertEqual(cliente.post('/retrain', data='{', content_type='application/json').status_code, 400)
+            self.assertEqual(cliente.post('/retrain', json={'csvText': 'basura'}).status_code, 400)
             entrenar.assert_not_called()
-            entrenar.return_value = {'estado': 'reemplazado'}
-            self.assertEqual(cliente.post('/retrain').status_code, 200)
+            entrenar.return_value = INFORME_OK
+            respuesta = cliente.post('/retrain', json={'csvText': CSV_NUEVO})
+            self.assertEqual(respuesta.status_code, 200)
+            self.assertEqual(respuesta.get_json()['status'], 'ok')
+            self.assertEqual(respuesta.get_json()['rowsIngested'], 2)
         with patch.dict('os.environ', {'RETRAIN_TOKEN': 'prueba'}), patch.object(retrain, 'reentrenar') as entrenar:
-            self.assertEqual(cliente.post('/retrain').status_code, 401)
+            self.assertEqual(cliente.post('/retrain', json={'csvText': CSV_NUEVO}).status_code, 401)
             entrenar.assert_not_called()
+
+    def test_csv_subido_queda_legible_para_el_siguiente_reentrenamiento(self):
+        """
+        validar_dataset devuelve fecha_cita como datetime y n_citas como float.
+        Si se volcaran tal cual, la validación estricta de la lectura siguiente
+        los rechazaría y el retrain se rompería en la petición posterior.
+        """
+        cliente = main.create_app(data_dir=self.root, model_path=self.model).test_client()
+        with patch.object(retrain, 'reentrenar', return_value=INFORME_OK):
+            self.assertEqual(cliente.post('/retrain', json={'csvText': CSV_NUEVO}).status_code, 200)
+        subidos = list(self.root.glob('subida_*.csv'))
+        self.assertEqual(len(subidos), 1)
+        self.assertEqual(subidos[0].read_text(encoding='utf-8').splitlines()[:2],
+                         ['fecha_cita,tramo,n_citas', '2026-07-01,mañana,3'])
+        self.assertEqual(len(t.cargar_datasets(self.root)[0]), 2)
+
+    def test_retrain_retira_el_csv_si_el_modelo_se_descarta(self):
+        cliente = main.create_app(data_dir=self.root, model_path=self.model).test_client()
+        with patch.object(retrain, 'reentrenar', return_value={
+                'estado': 'descartado', 'motivo': 'MAE peor que el umbral.'}):
+            respuesta = cliente.post('/retrain', json={'csvText': CSV_NUEVO})
+        # 200 y no 409: si no, el cliente lanzaría y el usuario no vería el motivo.
+        self.assertEqual(respuesta.status_code, 200)
+        self.assertEqual(respuesta.get_json()['status'], 'error')
+        self.assertEqual(respuesta.get_json()['rowsIngested'], 2)
+        self.assertFalse(list(self.root.glob('subida_*.csv')))
+
+    def test_retrain_acepta_el_csv_como_archivo(self):
+        cliente = main.create_app(data_dir=self.root, model_path=self.model).test_client()
+        with patch.object(retrain, 'reentrenar', return_value=INFORME_OK):
+            # Con BOM, que es como lo exporta Excel.
+            datos = {'file': (io.BytesIO(CSV_NUEVO.encode('utf-8-sig')), 'ocupacion.csv')}
+            respuesta = cliente.post('/retrain', data=datos, content_type='multipart/form-data')
+        self.assertEqual(respuesta.status_code, 200)
+        self.assertEqual(respuesta.get_json()['status'], 'ok')
 
 
 if __name__ == '__main__':
