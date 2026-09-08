@@ -36,7 +36,12 @@ class ReentrenamientoTests(unittest.TestCase):
         # De fábrica (nunca se escribe) y el que publica el reentrenamiento.
         self.base = self.root / 'modelo_ocupacion.joblib'
         self.activo = self.root / 'modelo_reentrenado.joblib'
-        self.original = servicio.cargar_artefacto()
+        # Explícitamente MODEL_BASE_PATH (el de fábrica), no el "vigente": si
+        # quedara un modelo_reentrenado.joblib real de una sesión anterior (p.
+        # ej. un `python main.py` que alguien se dejó corriendo), el "vigente"
+        # sería ese, no el original, y contaminaría todos los tests de esta
+        # clase en silencio — es justo lo que pasó al escribir este test.
+        self.original = servicio.cargar_artefacto(servicio.MODEL_BASE_PATH)
         joblib.dump(self.original, self.base)
         self.paths = patch.multiple(t, MODELS_DIR=str(self.root),
                                     MODEL_BASE_PATH=str(self.base),
@@ -135,6 +140,46 @@ class ReentrenamientoTests(unittest.TestCase):
                 pd.DataFrame([fila]).to_csv(self.root / 'datos.csv', index=False)
                 with self.assertRaises(t.ErrorDeReentrenamiento):
                     t.cargar_datasets(self.root)
+
+    def test_ventana_de_validacion_se_adapta_a_los_dias_nuevos(self):
+        """
+        Regresión: con la ventana fija de 60 días, un reentrenamiento
+        incremental de solo unos pocos días nuevos (p. ej. subir una semana)
+        se rechazaba SIEMPRE con "no hay suficientes días nuevos", aunque esos
+        días fueran genuinamente posteriores al entrenamiento vigente. La
+        ventana debe acortarse a los días realmente nuevos, nunca alargarse.
+        """
+        df, _ = t.cargar_datasets()
+        X, y, fechas = t.preparar_xy(df)
+        fecha_max = fechas.max()
+
+        # 10 días nuevos: por debajo del mínimo de 7 no debería pasar, por
+        # encima sí, y el hold-out debe medir exactamente esos 10 días, no 60.
+        # evaluar_holdout también usa 'actual' para el MAE del modelo vigente
+        # (predecir_features), así que hace falta un artefacto completo, no
+        # solo la fecha: se parte de self.original y se le pisa esa clave.
+        actual = dict(self.original, entrenado_hasta=str((fecha_max - pd.Timedelta(days=10)).date()))
+        validacion = t.evaluar_holdout(X, y, fechas, dias=t.DIAS_VALIDACION, actual=actual)
+        self.assertEqual(validacion['dias'], 10)
+        self.assertEqual(validacion['hasta'], str(fecha_max.date()))
+
+        # Una ventana grande disponible (mucho más que los 60 pedidos) no debe
+        # verse recortada: sigue siendo la ya validada por el resto de tests.
+        actual_lejano = dict(self.original, entrenado_hasta='2024-06-01')
+        validacion_normal = t.evaluar_holdout(X, y, fechas, dias=t.DIAS_VALIDACION, actual=actual_lejano)
+        self.assertEqual(validacion_normal['dias'], t.DIAS_VALIDACION)
+
+    def test_dias_nuevos_insuficientes_da_mensaje_claro(self):
+        """0 o pocos días nuevos siguen rechazándose, con un mensaje que dice cuántos hacen falta."""
+        df, _ = t.cargar_datasets()
+        X, y, fechas = t.preparar_xy(df)
+        # 0 días nuevos: la excepción se lanza antes de necesitar un artefacto
+        # completo, así que aquí basta con la fecha.
+        actual = {'entrenado_hasta': str(fechas.max().date())}
+        with self.assertRaises(t.ErrorDeReentrenamiento) as ctx:
+            t.evaluar_holdout(X, y, fechas, dias=t.DIAS_VALIDACION, actual=actual)
+        self.assertIn('0 día', str(ctx.exception))
+        self.assertIn(str(t.MIN_DIAS_NUEVOS), str(ctx.exception))
 
     def test_cache_del_artefacto_se_reutiliza_y_se_invalida(self):
         primero = servicio.obtener_artefacto(self.base)

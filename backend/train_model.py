@@ -93,6 +93,10 @@ DIAS_VALIDACION = 60
 # con los datos nuevos y no se despliega.
 MAE_MAXIMO_ACEPTABLE = 2.46
 
+# Mínimo de días posteriores al entrenamiento vigente para poder validar un
+# reentrenamiento incremental (ver evaluar_holdout).
+MIN_DIAS_NUEVOS = 7
+
 
 class ErrorDeReentrenamiento(Exception):
     """Fallo controlado durante el reentrenamiento (datos inválidos, etc.)."""
@@ -261,14 +265,33 @@ def evaluar_holdout(X, y, fechas, dias=DIAS_VALIDACION, actual=None):
     MAE honesto del pipeline con los datos actuales: se entrena con todo menos
     los últimos `dias` días y se mide contra ellos. Corte temporal, nunca
     aleatorio — es una serie temporal.
-    """
-    corte = fechas.max() - pd.Timedelta(days=dias)
-    es_train = fechas <= corte
 
-    if actual is not None and corte < pd.Timestamp(actual['entrenado_hasta']):
-        raise ErrorDeReentrenamiento(
-            'No hay suficientes días nuevos: la validación debe ser posterior al entrenamiento vigente.'
-        )
+    Si hay un modelo anterior, la ventana se acorta (nunca se alarga) a los
+    días que de verdad son posteriores a su `entrenado_hasta`. Sin este ajuste,
+    un reentrenamiento incremental (p. ej. subir una semana de datos) nunca
+    pasaría la validación por defecto de 60 días: el corte (fecha_máxima menos
+    60) caería antes del entrenamiento vigente aunque esos 7 días sean
+    genuinamente nuevos. Con el ajuste, el hold-out son exactamente esos días
+    nuevos — ni más (no existen) ni menos (así se validan todos).
+    """
+    fecha_max = fechas.max()
+
+    if actual is not None:
+        entrenado_hasta = pd.Timestamp(actual['entrenado_hasta'])
+        dias_nuevos = (fecha_max - entrenado_hasta).days
+        if dias_nuevos < MIN_DIAS_NUEVOS:
+            raise ErrorDeReentrenamiento(
+                'Solo hay {} día(s) posteriores al entrenamiento vigente ({}). '
+                'Hacen falta al menos {} días nuevos para poder validar el modelo: '
+                'los datos que subes deben tener fecha posterior a la última fecha '
+                'ya entrenada, no anterior ni ya cubierta.'.format(
+                    max(dias_nuevos, 0), actual['entrenado_hasta'], MIN_DIAS_NUEVOS,
+                )
+            )
+        dias = min(dias, dias_nuevos)
+
+    corte = fecha_max - pd.Timedelta(days=dias)
+    es_train = fechas <= corte
 
     if es_train.sum() == 0 or (~es_train).sum() == 0:
         raise ErrorDeReentrenamiento(
