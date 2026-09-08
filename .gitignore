@@ -228,13 +228,15 @@ __marimo__/
 .streamlit/secrets.toml
 
 # --- Lane de reentrenamiento ---
-# Copias de seguridad del modelo generadas por /retrain (artefactos de runtime)
-models/backup/
-models/.retrain.lock
-models/.modelo_*.joblib
+# Artefactos de runtime que genera /retrain. Van con la ruta completa a
+# propósito: un patrón que contiene "/" se ancla a la raíz del repositorio, así
+# que "models/backup/" dejó de aplicar cuando el backend se movió a backend/.
+backend/models/backup/
+backend/models/.retrain.lock
+backend/models/.modelo_*.joblib
 
 # CSV subidos por /retrain: son datos de runtime, no del repositorio
-data/subida_*.csv
+backend/data/subida_*.csv
 
 # Export crudo del sistema de reservas: contiene datos personales (RGPD).
 # Nunca debe entrar al repositorio.
