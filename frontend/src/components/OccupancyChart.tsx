@@ -19,7 +19,9 @@ const COLOR_TARDE = "#6f7858";
 
 function shortDateLabel(iso: string): string {
   const d = new Date(`${iso}T00:00:00`);
-  return d.toLocaleDateString("es-ES", { day: "2-digit", month: "2-digit" });
+  const weekday = d.toLocaleDateString("es-ES", { weekday: "short" });
+  const dayMonth = d.toLocaleDateString("es-ES", { day: "2-digit", month: "2-digit" });
+  return `${weekday} ${dayMonth}`;
 }
 
 export default function OccupancyChart({ data }: Props) {
@@ -39,7 +41,7 @@ export default function OccupancyChart({ data }: Props) {
             value,
             name === "manana" ? "Mañana" : "Tarde",
           ]}
-          labelFormatter={(label) => `Día ${label}`}
+          labelFormatter={(label) => label}
         />
         <Legend
           formatter={(value) => (value === "manana" ? "Mañana" : "Tarde")}
