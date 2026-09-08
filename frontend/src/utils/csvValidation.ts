@@ -1,4 +1,4 @@
-export const EXPECTED_HEADER = ["fecha", "tramo", "citas"];
+export const EXPECTED_HEADER = ["fecha_cita", "tramo", "n_citas"];
 export const EXAMPLE_FILE_PATH = "/ejemplo_retrain.csv";
 
 export interface ValidationError {
@@ -25,8 +25,10 @@ function splitCsvLine(line: string): string[] {
 }
 
 /**
- * Valida que un texto CSV siga el esquema esperado: fecha,tramo,citas
- * (fecha YYYY-MM-DD, tramo manana/tarde, citas entero >= 0).
+ * Valida que un texto CSV siga el esquema esperado: fecha_cita,tramo,n_citas
+ * (fecha YYYY-MM-DD, tramo manana/tarde, n_citas entero >= 0). Son las mismas
+ * reglas que aplica el backend al ingerirlo, para no enviar en balde un
+ * fichero que se va a rechazar.
  */
 export function validateCsv(rawText: string): ValidationResult {
   const errors: ValidationError[] = [];
@@ -69,7 +71,7 @@ export function validateCsv(rawText: string): ValidationResult {
     if (cells.length !== 3) {
       errors.push({
         line: lineNumber,
-        message: `Se esperaban 3 columnas (fecha,tramo,citas), se encontraron ${cells.length}.`,
+        message: `Se esperaban 3 columnas (${EXPECTED_HEADER.join(",")}), se encontraron ${cells.length}.`,
       });
       return;
     }
@@ -90,7 +92,8 @@ export function validateCsv(rawText: string): ValidationResult {
       });
     }
 
-    const citasNum = Number(citas);
+    // Number("") es 0, así que la celda vacía hay que descartarla aparte.
+    const citasNum = citas === "" ? NaN : Number(citas);
     if (!Number.isInteger(citasNum) || citasNum < 0) {
       errors.push({
         line: lineNumber,

@@ -10,7 +10,7 @@ import {
 
 type InputMode = "text" | "file";
 
-const PLACEHOLDER = `${EXPECTED_HEADER.join(",")}\n2024-01-08,manana,12\n2024-01-08,tarde,17`;
+const PLACEHOLDER = `${EXPECTED_HEADER.join(",")}\n2026-07-01,manana,4\n2026-07-01,tarde,7`;
 
 export default function Retrain() {
   const [mode, setMode] = useState<InputMode>("file");
@@ -173,8 +173,13 @@ export default function Retrain() {
 
         {submitError && <div className="alert alert-error">{submitError}</div>}
 
+        {/* El backend responde 200 con status "error" cuando el modelo candidato
+            no supera la validación: los datos han llegado bien, pero el modelo
+            NO se ha reemplazado, y eso no puede salir en verde. */}
         {response && (
-          <div className="alert alert-success">{response.message}</div>
+          <div className={`alert ${response.status === "ok" ? "alert-success" : "alert-error"}`}>
+            {response.message}
+          </div>
         )}
 
         <button

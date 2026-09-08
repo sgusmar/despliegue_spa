@@ -18,29 +18,27 @@ Static Site.
 
 ## Formato de datos para reentrenar
 
-CSV con cabecera exacta `fecha,tramo,citas`:
+CSV con cabecera exacta `fecha_cita,tramo,n_citas`:
 
 ```csv
-fecha,tramo,citas
-2024-01-08,manana,12
-2024-01-08,tarde,17
+fecha_cita,tramo,n_citas
+2026-07-01,manana,4
+2026-07-01,tarde,7
 ```
 
-- `fecha`: `YYYY-MM-DD`
-- `tramo`: `manana` o `tarde`
-- `citas`: entero >= 0 (número de citas reales de ese tramo)
+- `fecha_cita`: `YYYY-MM-DD`
+- `tramo`: `manana` o `tarde` (también se acepta `mañana`)
+- `n_citas`: entero >= 0 (número de citas reales de ese tramo)
 
-El archivo de ejemplo se sirve desde `public/ejemplo_retrain.csv` y es
-descargable desde la propia página de Reentrenar.
+Es el mismo formato que consume el backend, así que el fichero se valida en el
+navegador antes de enviarlo. El archivo de ejemplo se sirve desde
+`public/ejemplo_retrain.csv` y es descargable desde la página de Reentrenar.
 
-## Contrato de API esperado (backend)
+## Contrato de API
 
-Mientras no exista backend real, la app funciona con datos simulados
-(`src/api/mock.ts`). Al configurar `VITE_API_URL`, se usan los endpoints
-`/predict/single`, `/predict/range` y `/retrain` documentados en
-[../backend/README.md](../backend/README.md) — esa es la fuente de verdad
-del contrato (mantenerlo ahí evita que este README y el del backend se
-desincronicen).
+Los endpoints (`/predict/single`, `/predict/range`, `/retrain`) están
+documentados en [../backend/README.md](../backend/README.md), que es la fuente
+de verdad del contrato. Los tipos que los modelan viven en `src/types.ts`.
 
 ## Desarrollo local
 
@@ -49,12 +47,19 @@ npm install
 npm run dev
 ```
 
-Por defecto, sin `VITE_API_URL` configurada, la app usa datos simulados
-(`src/api/mock.ts`) para poder navegar y probar toda la funcionalidad sin
-backend.
+El frontend llama siempre a `/api/*`, y el proxy de `vite.config.ts` lo
+redirige al backend en `http://127.0.0.1:5000`. Para trabajar con la app
+completa, levanta el backend en otra terminal:
 
-Para apuntar a un backend real, copia `.env.example` a `.env` y configura
-`VITE_API_URL` con la URL base de la API.
+```bash
+cd ../backend
+pip install -r requirements.txt
+python main.py
+```
+
+Para trabajar en el frontend **sin backend levantado**, copia `.env.example` a
+`.env` y pon `VITE_USE_MOCK=true`: la app usa entonces datos simulados
+(`src/api/mock.ts`).
 
 ## Build y despliegue en Render
 
@@ -64,7 +69,7 @@ npm run build
 
 Genera el sitio estático en `dist/`. El `render.yaml` de la raíz del repo
 define este servicio como Static Site con `rootDir: frontend`
-(`npm ci && npm run build`, publish path `./dist`, y reescritura de rutas a
-`index.html` para que funcione el enrutado de React Router). Configura la
-variable de entorno `VITE_API_URL` en el dashboard de Render apuntando al
-backend cuando esté disponible.
+(`npm ci && npm run build`, publish path `./dist`) y dos reglas de reescritura,
+**en este orden**: `/api/*` hacia el backend y `/*` hacia `index.html` para el
+enrutado de React Router. Gracias a la primera, el navegador ve un único
+origen y no hace falta CORS ni hornear la URL del backend en el build.

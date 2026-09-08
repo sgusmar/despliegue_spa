@@ -7,8 +7,23 @@ import type {
 } from "../types";
 import { mockPredictRange, mockPredictSingle, mockRetrain } from "./mock";
 
-const API_URL = import.meta.env.VITE_API_URL as string | undefined;
-const USE_MOCK = !API_URL || import.meta.env.VITE_USE_MOCK === "true";
+// Por defecto se llama al mismo origen: en desarrollo lo resuelve el proxy de
+// vite.config.ts y en Render la regla de rewrite del static site, así que no
+// hay que hornear la URL del backend en el build ni habilitar CORS.
+const API_URL = (import.meta.env.VITE_API_URL as string | undefined) ?? "/api";
+const USE_MOCK = import.meta.env.VITE_USE_MOCK === "true";
+
+/** El backend contesta {"error": "..."}; sin esto el usuario vería el JSON crudo. */
+async function readError(res: Response, fallback: string): Promise<string> {
+  const text = await res.text().catch(() => "");
+  if (!text) return fallback;
+  try {
+    const body = JSON.parse(text);
+    return body.error ?? body.message ?? text;
+  } catch {
+    return text;
+  }
+}
 
 async function postJson<T>(path: string, body: unknown): Promise<T> {
   const res = await fetch(`${API_URL}${path}`, {
@@ -18,8 +33,7 @@ async function postJson<T>(path: string, body: unknown): Promise<T> {
   });
 
   if (!res.ok) {
-    const text = await res.text().catch(() => "");
-    throw new Error(text || `Error ${res.status} al llamar a ${path}`);
+    throw new Error(await readError(res, `Error ${res.status} al llamar a ${path}`));
   }
 
   return res.json() as Promise<T>;
@@ -62,8 +76,7 @@ export async function retrainWithFile(file: File): Promise<RetrainResponse> {
   });
 
   if (!res.ok) {
-    const errText = await res.text().catch(() => "");
-    throw new Error(errText || `Error ${res.status} al subir el archivo`);
+    throw new Error(await readError(res, `Error ${res.status} al subir el archivo`));
   }
 
   return res.json() as Promise<RetrainResponse>;
