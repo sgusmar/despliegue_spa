@@ -169,17 +169,38 @@ class ReentrenamientoTests(unittest.TestCase):
         validacion_normal = t.evaluar_holdout(X, y, fechas, dias=t.DIAS_VALIDACION, actual=actual_lejano)
         self.assertEqual(validacion_normal['dias'], t.DIAS_VALIDACION)
 
-    def test_dias_nuevos_insuficientes_da_mensaje_claro(self):
-        """0 o pocos días nuevos siguen rechazándose, con un mensaje que dice cuántos hacen falta."""
+    def test_sin_filas_nuevas_se_rechaza(self):
+        """Resubir exactamente los mismos datos no debe reentrenar ni republicar nada."""
         df, _ = t.cargar_datasets()
         X, y, fechas = t.preparar_xy(df)
-        # 0 días nuevos: la excepción se lanza antes de necesitar un artefacto
-        # completo, así que aquí basta con la fecha.
-        actual = {'entrenado_hasta': str(fechas.max().date())}
+        actual = dict(self.original, entrenado_hasta=str(fechas.max().date()),
+                      filas_disponibles=len(fechas))
         with self.assertRaises(t.ErrorDeReentrenamiento) as ctx:
             t.evaluar_holdout(X, y, fechas, dias=t.DIAS_VALIDACION, actual=actual)
-        self.assertIn('0 día', str(ctx.exception))
-        self.assertIn(str(t.MIN_DIAS_NUEVOS), str(ctx.exception))
+        self.assertIn('no han cambiado', str(ctx.exception))
+
+    def test_relleno_de_hueco_historico_se_acepta_con_la_ventana_completa(self):
+        """
+        Regresión: subir datos con fecha ANTERIOR a la máxima ya registrada
+        (rellenar un hueco histórico) se rechazaba siempre con "no hay
+        suficientes días nuevos", aunque esas filas fueran genuinamente nuevas
+        (nunca habían estado en el dataset) — porque el horizonte no avanzaba.
+        Si hay más filas que la última vez, debe aceptarse igualmente,
+        validando con la ventana completa sobre el tramo final ya conocido.
+        """
+        df, _ = t.cargar_datasets()
+        X, y, fechas = t.preparar_xy(df)
+        fecha_max = fechas.max()
+        # El modelo anterior se entrenó con MENOS filas pero llegando a LA
+        # MISMA fecha máxima: exactamente "se ha rellenado un hueco", no "se
+        # ha extendido el horizonte".
+        actual = dict(self.original, entrenado_hasta=str(fecha_max.date()),
+                      filas_disponibles=len(fechas) - 14)
+        validacion = t.evaluar_holdout(X, y, fechas, dias=t.DIAS_VALIDACION, actual=actual)
+        # dias_nuevos = 0 -> no se acorta la ventana (no hay a qué acortarla),
+        # pero tampoco se rechaza: se usa la ventana completa solicitada.
+        self.assertEqual(validacion['dias'], t.DIAS_VALIDACION)
+        self.assertEqual(validacion['hasta'], str(fecha_max.date()))
 
     def test_cache_del_artefacto_se_reutiliza_y_se_invalida(self):
         primero = servicio.obtener_artefacto(self.base)

@@ -266,29 +266,38 @@ def evaluar_holdout(X, y, fechas, dias=DIAS_VALIDACION, actual=None):
     los últimos `dias` días y se mide contra ellos. Corte temporal, nunca
     aleatorio — es una serie temporal.
 
-    Si hay un modelo anterior, la ventana se acorta (nunca se alarga) a los
-    días que de verdad son posteriores a su `entrenado_hasta`. Sin este ajuste,
-    un reentrenamiento incremental (p. ej. subir una semana de datos) nunca
-    pasaría la validación por defecto de 60 días: el corte (fecha_máxima menos
-    60) caería antes del entrenamiento vigente aunque esos 7 días sean
-    genuinamente nuevos. Con el ajuste, el hold-out son exactamente esos días
-    nuevos — ni más (no existen) ni menos (así se validan todos).
+    Si hay un modelo anterior, primero se comprueba que hay filas nuevas de
+    verdad (más de las que había cuando se entrenó `actual`): sin eso, sería
+    reentrenar y republicar sin ninguna información nueva. Con eso claro, hay
+    dos formas de que esas filas nuevas sean válidas:
+
+    - **Extienden el horizonte**: hay `dias_nuevos` posteriores al
+      `entrenado_hasta` vigente. La ventana se acorta (nunca se alarga) a esos
+      días — así una semana recién subida no necesita acumular `dias` días de
+      margen para poder validarse; el hold-out son exactamente esos días
+      nuevos, ni más (no existen) ni menos.
+    - **Rellenan un hueco histórico**: las filas nuevas tienen fecha anterior
+      a la máxima ya registrada, así que no hay "días nuevos" al final que
+      aislar como hold-out. En ese caso se usa la ventana `dias` completa
+      sobre el tramo final ya conocido: se revalida si incorporar esas filas
+      mejora o empeora el modelo ahí, comparado con el vigente.
     """
     fecha_max = fechas.max()
+    filas_disponibles = len(fechas)
 
     if actual is not None:
-        entrenado_hasta = pd.Timestamp(actual['entrenado_hasta'])
-        dias_nuevos = (fecha_max - entrenado_hasta).days
-        if dias_nuevos < MIN_DIAS_NUEVOS:
+        filas_anteriores = actual.get('filas_disponibles')
+        if filas_anteriores is not None and filas_disponibles <= filas_anteriores:
             raise ErrorDeReentrenamiento(
-                'Solo hay {} día(s) posteriores al entrenamiento vigente ({}). '
-                'Hacen falta al menos {} días nuevos para poder validar el modelo: '
-                'los datos que subes deben tener fecha posterior a la última fecha '
-                'ya entrenada, no anterior ni ya cubierta.'.format(
-                    max(dias_nuevos, 0), actual['entrenado_hasta'], MIN_DIAS_NUEVOS,
-                )
+                'Los datos no han cambiado desde el último entrenamiento: no hay nada nuevo que validar.'
             )
-        dias = min(dias, dias_nuevos)
+        dias_nuevos = (fecha_max - pd.Timestamp(actual['entrenado_hasta'])).days
+        if dias_nuevos >= MIN_DIAS_NUEVOS:
+            dias = min(dias, dias_nuevos)
+        # Si no, hay filas nuevas (ya comprobado arriba) pero no extienden el
+        # horizonte lo suficiente — un hueco histórico o un incremento de
+        # menos de MIN_DIAS_NUEVOS días — así que se valida con la ventana
+        # `dias` completa tal cual, en vez de rechazar.
 
     corte = fecha_max - pd.Timedelta(days=dias)
     es_train = fechas <= corte
@@ -416,6 +425,9 @@ def _reentrenar(data_dir, dias_validacion):
         "version": uuid.uuid4().hex,
         "validacion": validacion,
         "entrenado_hasta": str(fechas.max().date()),
+        # Para que el próximo reentrenamiento sepa si de verdad hay filas
+        # nuevas (extiendan el horizonte o rellenen un hueco histórico).
+        "filas_disponibles": len(X),
         "mejores_params": {
             k: v for k, v in HIPERPARAMETROS.items() if k != "random_state"
         },

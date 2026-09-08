@@ -141,21 +141,26 @@ baseline semanal y contra el modelo actual). Si no lo mejora, se conserva el
 anterior y **el CSV subido se retira**, para que `data/` contenga solo datos
 que han producido un modelo aceptado.
 
-**La ventana de validación se adapta a los días nuevos.** Por defecto son 60
-días, pero si el histórico solo tiene, por ejemplo, 7 días posteriores al
-`entrenado_hasta` vigente (un reentrenamiento incremental típico: subir una
-semana de datos), la ventana se acorta a esos 7 días — nunca se alarga. Sin
-este ajuste, subir datos semana a semana nunca pasaría de la primera vez: el
-corte de validación (fecha máxima menos 60 días) caería antes del
-entrenamiento vigente aunque la semana subida fuera genuinamente nueva.
+**Solo se exige que haya filas nuevas de verdad** (más que las que había
+cuando se entrenó el modelo vigente). Sin eso, se rechaza: sería reentrenar y
+republicar sin ninguna información nueva. Con eso claro, hay dos formas
+válidas de aportar filas nuevas, y la ventana de validación se adapta a cuál
+sea:
 
-Con menos de 7 días nuevos se rechaza con un mensaje explícito de cuántos
-faltan. Esto incluye subir datos **anteriores** a la fecha máxima ya
-registrada (rellenar un hueco hacia atrás): el sistema no lo detecta como
-"días nuevos" aunque esas fechas concretas no estuvieran antes en `data/`,
-porque `entrenado_hasta` es una frontera cronológica que solo avanza — para
-que una subida cuente, tiene que llevar la fecha máxima del histórico hacia
-delante.
+- **Extender el horizonte** (subir una semana nueva, por ejemplo): la ventana
+  de validación (60 días por defecto) se acorta —nunca se alarga— a los días
+  que de verdad son posteriores al `entrenado_hasta` vigente. Sin este ajuste,
+  subir datos semana a semana nunca pasaría de la primera vez: el corte
+  (fecha máxima menos 60 días) caería antes del entrenamiento vigente aunque
+  la semana subida fuera genuinamente nueva.
+- **Rellenar un hueco histórico** (fechas anteriores a la máxima ya
+  registrada): como no hay días nuevos al final que aislar como hold-out, se
+  usa la ventana de validación completa sobre el tramo final ya conocido,
+  comparando si incorporar esas filas mejora o empeora el modelo ahí.
+
+En ambos casos el modelo solo se publica si de verdad mejora; rellenar un
+hueco no está garantizado que lo haga (si el hueco es pequeño frente al
+histórico total, es normal que apenas mueva el MAE de validación).
 
 Publicar significa escribir `modelo_reentrenado.joblib`; el artefacto de
 fábrica no se toca nunca, así que `POST /retrain/reset` deshace cualquier
