@@ -1,25 +1,14 @@
 from flask import Flask, request, jsonify
 from model_service import predecir_ocupacion
 from retrain import retrain_bp
+from root import root_bp
 
 app = Flask(__name__)
 
 #registrar la ruta de reentrenamiento creada por mi compañero
 app.register_blueprint(retrain_bp)
-
-
-@app.route("/", methods=["GET"])
-def home():
-    #landing page con la info de la API y los endpoints disponibles
-    return jsonify({
-        "proyecto": "API de Predicción de Ocupación - Spa Oasis",
-        "descripcion": "API REST para predecir la ocupación del spa y reentrenar el modelo",
-        "endpoints": {
-            "/": "GET - Mensaje de bienvenida e instrucciones",
-            "/predict": "POST - Recibe fecha (YYYY-MM-DD) y tramo (mañana/tarde) para devolver la predicción",
-            "/retrain": "POST - Ejecuta el reentrenamiento del modelo"
-        }
-    })
+# registrar la ruta de root
+app.register_blueprint(root_bp)
 
 
 @app.route("/predict", methods=["POST", "GET"])
