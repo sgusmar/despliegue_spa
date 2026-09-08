@@ -1,4 +1,5 @@
 import { NavLink, Outlet } from "react-router-dom";
+import HealthWidget from "./HealthWidget";
 
 export default function Layout() {
   return (
@@ -28,6 +29,8 @@ export default function Layout() {
       <footer className="app-footer">
         Oasis Spa Sevilla · Modelo interno de predicción de ocupación
       </footer>
+
+      <HealthWidget />
     </div>
   );
 }

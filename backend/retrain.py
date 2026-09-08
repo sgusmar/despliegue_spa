@@ -18,8 +18,10 @@ Decisiones importantes:
   mismo.
 """
 import datetime as dt
+import glob
 import io
 import os
+import shutil
 import threading
 
 import pandas as pd
@@ -108,6 +110,45 @@ def ingerir_y_reentrenar(csv_texto, data_dir=None, dias_validacion=None):
         _candado.release()
 
     return _a_respuesta(informe, filas)
+
+
+def restaurar_original(data_dir=None):
+    """
+    Vuelve al estado de fábrica: descarta el modelo reentrenado y los CSV
+    subidos, de modo que el siguiente reentrenamiento parta del histórico
+    original.
+
+    No hace falta invalidar la caché: está indexada por ruta, y al desaparecer
+    el modelo reentrenado la siguiente lectura ya apunta al de fábrica.
+    """
+    data_dir = data_dir or train_model.DATA_DIR
+    if not _candado.acquire(blocking=False):
+        raise ReentrenamientoEnCurso('Hay un reentrenamiento en curso. Espera a que termine.')
+    try:
+        habia_modelo = os.path.exists(train_model.MODEL_ACTIVE_PATH)
+        if habia_modelo:
+            os.unlink(train_model.MODEL_ACTIVE_PATH)
+        subidos = sorted(glob.glob(os.path.join(str(data_dir), 'subida_*.csv')))
+        for ruta in subidos:
+            os.unlink(ruta)
+        shutil.rmtree(train_model.BACKUP_DIR, ignore_errors=True)
+    finally:
+        _candado.release()
+
+    if not habia_modelo and not subidos:
+        return {'status': 'ok', 'modelRestored': False, 'filesRemoved': 0,
+                'message': 'Ya estabas usando el modelo original: no había nada que restaurar.'}
+    return {
+        'status': 'ok',
+        'modelRestored': habia_modelo,
+        'filesRemoved': len(subidos),
+        'message': (
+            'Se ha restaurado el modelo original{}.'.format(
+                ' y se han eliminado {} fichero(s) de datos subidos'.format(len(subidos))
+                if subidos else ''
+            )
+        ),
+    }
 
 
 def _a_respuesta(informe, filas):

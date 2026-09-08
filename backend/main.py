@@ -146,6 +146,7 @@ def _registrar_rutas(app):
                 'POST /predict/range': 'Predicción de un rango de fechas: {startDate, endDate}',
                 'GET /retrain': 'Estado del modelo desplegado e instrucciones de reentrenamiento',
                 'POST /retrain': "Reentrena el modelo con un CSV nuevo (archivo 'file' o {csvText})",
+                'POST /retrain/reset': 'Descarta el modelo reentrenado y los CSV subidos',
             },
         })
 
@@ -163,6 +164,9 @@ def _registrar_rutas(app):
             'model_loaded': True,
             'entrenado_hasta': art['entrenado_hasta'],
             'version_modelo': art.get('version', 'original'),
+            # Solo los artefactos reentrenados llevan 'version', así que la
+            # ausencia de esa clave identifica al de fábrica.
+            'es_original': 'version' not in art,
         })
 
     @app.post('/predict/single')
@@ -224,6 +228,11 @@ def _registrar_rutas(app):
         _exigir_token()
         csv_texto = _leer_csv_de_peticion()
         return jsonify(retrain.ingerir_y_reentrenar(csv_texto, app.config['DATA_DIR']))
+
+    @app.post('/retrain/reset')
+    def restaurar_original():
+        _exigir_token()
+        return jsonify(retrain.restaurar_original(app.config['DATA_DIR']))
 
 
 def _registrar_errores(app):

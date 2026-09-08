@@ -47,7 +47,12 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(BASE_DIR, "data")
 MODELS_DIR = os.path.join(BASE_DIR, "models")
 BACKUP_DIR = os.path.join(MODELS_DIR, "backup")
-MODEL_PATH = os.path.join(MODELS_DIR, "modelo_ocupacion.joblib")
+# El artefacto de fábrica es de solo lectura: el reentrenamiento publica
+# siempre en MODEL_ACTIVE_PATH, y model_service da prioridad a ese fichero si
+# existe. Así restaurar el original es borrar un fichero, no recuperar una
+# copia de seguridad y confiar en que esté intacta.
+MODEL_BASE_PATH = os.path.join(MODELS_DIR, "modelo_ocupacion.joblib")
+MODEL_ACTIVE_PATH = os.path.join(MODELS_DIR, "modelo_reentrenado.joblib")
 SCALER_PATH = os.path.join(MODELS_DIR, "scaler.joblib")
 
 # Dataset base del proyecto original. Cualquier CSV adicional que se añada a
@@ -303,15 +308,18 @@ def evaluar_holdout(X, y, fechas, dias=DIAS_VALIDACION, actual=None):
 
 
 def _guardar_copia_de_seguridad():
-    """Aparta el artefacto vigente antes de sobrescribirlo."""
-    if not os.path.exists(MODEL_PATH):
+    """
+    Aparta el modelo reentrenado anterior antes de sobrescribirlo.
+
+    El artefacto de fábrica no se copia porque nunca se toca: si no ha habido
+    ningún reentrenamiento previo, no hay nada que salvar.
+    """
+    if not os.path.exists(MODEL_ACTIVE_PATH):
         return None
     os.makedirs(BACKUP_DIR, exist_ok=True)
     sello = dt.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-    destino = os.path.join(BACKUP_DIR, "modelo_ocupacion_" + sello + ".joblib")
-    shutil.copy2(MODEL_PATH, destino)
-    if os.path.exists(SCALER_PATH):
-        shutil.copy2(SCALER_PATH, os.path.join(BACKUP_DIR, "scaler_" + sello + ".joblib"))
+    destino = os.path.join(BACKUP_DIR, "modelo_reentrenado_" + sello + ".joblib")
+    shutil.copy2(MODEL_ACTIVE_PATH, destino)
     try:
         return os.path.relpath(destino, BASE_DIR).replace(os.sep, "/")
     except ValueError:
@@ -338,7 +346,11 @@ def _reentrenar(data_dir, dias_validacion):
     df, fuentes = cargar_datasets(data_dir)
     X, y, fechas = preparar_xy(df)
 
-    actual = cargar_artefacto(MODEL_PATH) if os.path.exists(MODEL_PATH) else None
+    # Mismo criterio que model_service.ruta_modelo_vigente(), pero con las
+    # constantes de este módulo, que son las que los tests redirigen a un
+    # directorio temporal.
+    vigente = MODEL_ACTIVE_PATH if os.path.exists(MODEL_ACTIVE_PATH) else MODEL_BASE_PATH
+    actual = cargar_artefacto(vigente) if os.path.exists(vigente) else None
     validacion = evaluar_holdout(X, y, fechas, dias_validacion, actual)
     mae_anterior = validacion['mae_modelo_actual']
     umbral = min(MAE_MAXIMO_ACEPTABLE, validacion['mae_baseline'],
@@ -394,7 +406,7 @@ def _reentrenar(data_dir, dias_validacion):
     try:
         joblib.dump(artefacto, temporal)
         cargar_artefacto(temporal)
-        os.replace(temporal, MODEL_PATH)
+        os.replace(temporal, MODEL_ACTIVE_PATH)
         # El mtime del fichero ya bastaría, pero invalidar explícitamente cubre
         # también el uso por CLI (python train_model.py) dentro del mismo proceso.
         invalidar_cache()

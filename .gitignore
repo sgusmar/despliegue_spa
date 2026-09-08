@@ -231,6 +231,7 @@ __marimo__/
 # Artefactos de runtime que genera /retrain. Van con la ruta completa a
 # propósito: un patrón que contiene "/" se ancla a la raíz del repositorio, así
 # que "models/backup/" dejó de aplicar cuando el backend se movió a backend/.
+backend/models/modelo_reentrenado.joblib
 backend/models/backup/
 backend/models/.retrain.lock
 backend/models/.modelo_*.joblib

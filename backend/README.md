@@ -13,7 +13,21 @@ permite reentrenarlo con datos nuevos. Se despliega en Render como Web Service.
 | `retrain.py` | Ingesta del CSV que llega por `POST /retrain`. Sin framework. |
 | `utils/` | Ingeniería de características, compartida por entrenamiento y predicción. |
 | `data/` | CSV de ocupación (`fecha_cita,tramo,n_citas`). |
-| `models/` | Artefactos serializados (`modelo_ocupacion.joblib`, `scaler.joblib`). |
+| `models/` | Artefactos serializados (ver más abajo). |
+
+### Los dos artefactos
+
+```
+models/
+├── modelo_ocupacion.joblib     de fábrica, versionado, NUNCA se escribe
+├── scaler.joblib               de fábrica, versionado
+└── modelo_reentrenado.joblib   lo publica /retrain, ignorado por git
+```
+
+Si existe `modelo_reentrenado.joblib`, es el que se usa; si no, se cae al de
+fábrica. El artefacto versionado es de **solo lectura**, así que volver al
+original nunca depende de que una copia de seguridad esté intacta: basta con
+borrar un fichero, que es justo lo que hace `POST /retrain/reset`.
 
 El enrutado está concentrado en `main.py` a propósito: el resto de módulos son
 dependencias sin Flask, así que se pueden probar y reutilizar sin levantar la
@@ -35,8 +49,12 @@ Siempre `200`, incluso sin modelo — es un *liveness check*, y devolver error
 solo haría que Render reiniciase el servicio en bucle.
 
 ```json
-{"status": "ok", "model_loaded": true, "entrenado_hasta": "2026-01-24", "version_modelo": "original"}
+{"status": "ok", "model_loaded": true, "entrenado_hasta": "2026-01-24",
+ "version_modelo": "original", "es_original": true}
 ```
+
+`es_original` es `false` cuando está activo un modelo reentrenado. El frontend
+lo usa para ofrecer el botón de restaurar en el widget flotante de estado.
 
 ### `POST /predict/single`
 
@@ -88,6 +106,17 @@ Un candidato descartado responde `200` y no un error de HTTP a propósito: el
 CSV se ha procesado correctamente, y así el frontend puede mostrar cuántas
 filas ha leído y por qué no se ha publicado el modelo.
 
+### `POST /retrain/reset`
+
+Vuelve al estado de fábrica: borra `modelo_reentrenado.joblib`, los CSV
+subidos (`data/subida_*.csv`) y las copias de seguridad. Es idempotente.
+
+```jsonc
+{"status": "ok", "modelRestored": true, "filesRemoved": 1, "message": "..."}
+```
+
+Exige `X-Retrain-Token` en las mismas condiciones que `POST /retrain`.
+
 ### Errores
 
 Todos los errores salen en JSON como `{"error": "..."}`:
@@ -111,6 +140,10 @@ publica si mejora al vigente en un holdout temporal (se compara contra un
 baseline semanal y contra el modelo actual). Si no lo mejora, se conserva el
 anterior y **el CSV subido se retira**, para que `data/` contenga solo datos
 que han producido un modelo aceptado.
+
+Publicar significa escribir `modelo_reentrenado.joblib`; el artefacto de
+fábrica no se toca nunca, así que `POST /retrain/reset` deshace cualquier
+reentrenamiento sin necesidad de restaurar copias.
 
 El artefacto vigente se cachea en memoria y se recarga solo cuando el fichero
 cambia, así que un reentrenamiento surte efecto sin reiniciar el servicio.

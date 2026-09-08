@@ -10,7 +10,16 @@ import pandas as pd
 from utils.feature_engineering import construir_features_df
 from utils.preprocessing import build_features
 
-MODEL_PATH = Path(__file__).resolve().parent / 'models' / 'modelo_ocupacion.joblib'
+MODELS_DIR = Path(__file__).resolve().parent / 'models'
+
+# Artefacto de fábrica: viaja versionado en el repositorio y NUNCA se
+# sobrescribe. Por eso volver al original es siempre posible, y no depende de
+# que exista una copia de seguridad.
+MODEL_BASE_PATH = MODELS_DIR / 'modelo_ocupacion.joblib'
+
+# Donde publica el reentrenamiento. Si existe, manda sobre el de fábrica; para
+# restaurar el original basta con borrarlo.
+MODEL_ACTIVE_PATH = MODELS_DIR / 'modelo_reentrenado.joblib'
 
 # Tope de /predict/range: un año natural cabe entero (para comparar con el año
 # anterior) y evita que una petición accidental pida miles de días.
@@ -40,9 +49,14 @@ def tramo_ascii(tramo):
     return 'manana' if tramo == 'mañana' else 'tarde'
 
 
-def cargar_artefacto(model_path=MODEL_PATH):
+def ruta_modelo_vigente():
+    """El reentrenado si lo hay; si no, el de fábrica."""
+    return MODEL_ACTIVE_PATH if MODEL_ACTIVE_PATH.exists() else MODEL_BASE_PATH
+
+
+def cargar_artefacto(model_path=None):
     """Carga una versión completa; admite el formato original separado."""
-    path = Path(model_path)
+    path = Path(model_path) if model_path else ruta_modelo_vigente()
     art = joblib.load(path)
     if not isinstance(art, dict) or not {'modelo', 'columnas', 'entrenado_hasta'} <= art.keys():
         raise ValueError('Formato de artefacto incompatible.')
@@ -60,7 +74,7 @@ def obtener_artefacto(model_path=None):
     porque el float tiene resolución de ~1 s en algunos sistemas de ficheros y
     una publicación puede caer dentro del mismo segundo que la última carga.
     """
-    ruta = Path(model_path or MODEL_PATH)
+    ruta = Path(model_path) if model_path else ruta_modelo_vigente()
     try:
         estado = ruta.stat()
     except OSError as exc:

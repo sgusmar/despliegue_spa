@@ -1,7 +1,9 @@
 import type {
   DayOccupancy,
+  HealthResponse,
   RangePredictionRequest,
   RangePredictionResult,
+  RestoreResponse,
   RetrainResponse,
   SinglePredictionRequest,
   SinglePredictionResult,
@@ -95,9 +97,37 @@ export async function mockPredictRange(
 }
 
 export async function mockRetrain(rowCount: number): Promise<RetrainResponse> {
+  mockModelIsOriginal = false;
   return simulateLatency({
     status: "ok",
     rowsIngested: rowCount,
     message: `Se han recibido ${rowCount} filas correctamente. El modelo se reentrenará con estos datos.`,
+  });
+}
+
+// En modo mock no hay backend, pero sí se simula el estado del modelo para que
+// el widget de estado y el botón de restaurar se puedan probar sin él.
+let mockModelIsOriginal = true;
+
+export async function mockHealth(): Promise<HealthResponse> {
+  return simulateLatency({
+    status: "ok",
+    model_loaded: true,
+    entrenado_hasta: mockModelIsOriginal ? "2026-01-24" : "2026-07-07",
+    version_modelo: mockModelIsOriginal ? "original" : "a63dc12a017c4a6682678557892d79a2",
+    es_original: mockModelIsOriginal,
+  });
+}
+
+export async function mockRestore(): Promise<RestoreResponse> {
+  const habiaReentrenado = !mockModelIsOriginal;
+  mockModelIsOriginal = true;
+  return simulateLatency({
+    status: "ok",
+    modelRestored: habiaReentrenado,
+    filesRemoved: habiaReentrenado ? 1 : 0,
+    message: habiaReentrenado
+      ? "Se ha restaurado el modelo original y se han eliminado 1 fichero(s) de datos subidos."
+      : "Ya estabas usando el modelo original: no había nada que restaurar.",
   });
 }

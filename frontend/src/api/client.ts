@@ -1,11 +1,19 @@
 import type {
+  HealthResponse,
   RangePredictionRequest,
   RangePredictionResult,
+  RestoreResponse,
   RetrainResponse,
   SinglePredictionRequest,
   SinglePredictionResult,
 } from "../types";
-import { mockPredictRange, mockPredictSingle, mockRetrain } from "./mock";
+import {
+  mockHealth,
+  mockPredictRange,
+  mockPredictSingle,
+  mockRestore,
+  mockRetrain,
+} from "./mock";
 
 // Por defecto se llama al mismo origen: en desarrollo lo resuelve el proxy de
 // vite.config.ts y en Render la regla de rewrite del static site, así que no
@@ -80,6 +88,22 @@ export async function retrainWithFile(file: File): Promise<RetrainResponse> {
   }
 
   return res.json() as Promise<RetrainResponse>;
+}
+
+export async function getHealth(): Promise<HealthResponse> {
+  if (USE_MOCK) return mockHealth();
+
+  const res = await fetch(`${API_URL}/health`);
+  if (!res.ok) {
+    throw new Error(await readError(res, `Error ${res.status} al consultar el estado`));
+  }
+  return res.json() as Promise<HealthResponse>;
+}
+
+/** Descarta el modelo reentrenado y los CSV subidos: vuelve al modelo de fábrica. */
+export async function restoreOriginalModel(): Promise<RestoreResponse> {
+  if (USE_MOCK) return mockRestore();
+  return postJson<RestoreResponse>("/retrain/reset", {});
 }
 
 export const isMockMode = USE_MOCK;

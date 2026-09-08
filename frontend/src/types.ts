@@ -32,3 +32,19 @@ export interface RetrainResponse {
   rowsIngested: number;
   message: string;
 }
+
+export interface HealthResponse {
+  status: string;
+  model_loaded: boolean;
+  entrenado_hasta?: string;
+  version_modelo?: string;
+  /** false cuando está activo un modelo reentrenado en lugar del de fábrica. */
+  es_original?: boolean;
+}
+
+export interface RestoreResponse {
+  status: "ok";
+  modelRestored: boolean;
+  filesRemoved: number;
+  message: string;
+}
