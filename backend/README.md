@@ -154,11 +154,19 @@ El CSV recibido **se suma al histórico**, no lo reemplaza: se guarda en `data/`
 con un nombre (`subida_<sello>.csv`) que ordena después del dataset base, de
 modo que en caso de solapamiento gane el dato más reciente.
 
-Después se reentrena con todo lo que haya en `data/` y el modelo nuevo solo se
-publica si mejora al vigente en un holdout temporal (se compara contra un
-baseline semanal y contra el modelo actual). Si no lo mejora, se conserva el
-anterior y **el CSV subido se retira**, para que `data/` contenga solo datos
-que han producido un modelo aceptado.
+Después se reentrena con todo lo que haya en `data/` y el modelo nuevo se
+publica si **no empeora claramente** al vigente en un holdout temporal: el
+umbral es el MAE del modelo actual en esa misma ventana, con un 10% de margen
+(`MARGEN_TOLERANCIA_MAE`) — no una comparación contra un baseline ingenuo ni
+un techo fijo, que rechazaban reentrenamientos con datos reales válidos solo
+porque, por casualidad, la ventana concreta favorecía a esa referencia. Ese
+techo fijo (`MAE_MAXIMO_ACEPTABLE`) solo se usa en el primer entrenamiento,
+cuando no hay modelo anterior con el que comparar.
+
+**El CSV se conserva aunque el modelo no se publique.** Son datos reales: que
+el candidato no bata al vigente en esta validación concreta no los invalida
+como observaciones. Solo se retira si ni siquiera se ha podido evaluar (p. ej.
+no aporta ninguna fila nueva sobre lo que ya había).
 
 **Solo se exige que haya filas nuevas de verdad** (más que las que había
 cuando se entrenó el modelo vigente). Sin eso, se rechaza: sería reentrenar y

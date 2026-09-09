@@ -12,10 +12,12 @@ Decisiones importantes:
   fichero más de `data/` con un nombre que ordena después del dataset base,
   porque `cargar_datasets()` deduplica con `keep="last"`: así una subida puede
   corregir cifras del histórico sin editar el fichero original a mano.
-* **Si el modelo nuevo no se publica, el CSV se retira.** `data/` solo
-  contiene datos que han producido un modelo aceptado, de modo que el
-  histórico que se muestra en el gráfico y el que entrena el modelo son el
-  mismo.
+* **El CSV se conserva aunque el modelo no se publique.** Son datos reales:
+  que el candidato entrenado con ellos no bata al modelo vigente en esta
+  validación concreta no los invalida como observaciones, así que se quedan
+  en `data/` (alimentan el gráfico del año anterior y el próximo intento de
+  reentrenamiento) aunque el modelo activo no cambie. Solo se retira si ni
+  siquiera se ha podido evaluar (p. ej. no aporta ninguna fila nueva).
 """
 import datetime as dt
 import glob
@@ -102,10 +104,15 @@ def ingerir_y_reentrenar(csv_texto, data_dir=None, dias_validacion=None):
                 dias_validacion=dias_validacion or train_model.DIAS_VALIDACION,
             )
         except Exception:
+            # No se ha podido ni evaluar (datos sin novedad, fallo de E/S...):
+            # aquí sí se retira, no hay nada válido que conservar.
             os.unlink(destino)
             raise
-        if informe['estado'] != 'reemplazado':
-            os.unlink(destino)
+        # Si el modelo se descarta por calidad ("descartado"), el CSV SE
+        # CONSERVA: son datos reales que sí se evaluaron, solo que el modelo
+        # candidato no batió al vigente. Descartarlos junto con el modelo
+        # los haría desaparecer sin que quedase rastro, y el próximo
+        # reentrenamiento partiría de menos información que la disponible.
     finally:
         _candado.release()
 
@@ -170,7 +177,8 @@ def _a_respuesta(informe, filas):
         'status': 'error',
         'rowsIngested': filas,
         'message': (
-            'Se han recibido {} filas, pero el modelo NO se ha reemplazado: {} '
-            'Los datos enviados se han descartado.'.format(filas, informe.get('motivo', ''))
+            'Se han recibido {} filas, pero el modelo NO se ha reemplazado: {}'.format(
+                filas, informe.get('motivo', '')
+            )
         ),
     }
