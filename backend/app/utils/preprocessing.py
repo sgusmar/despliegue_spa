@@ -1,7 +1,7 @@
 # src/preprocessing.py
 import pandas as pd
 
-from utils.feature_engineering import FECHA_REFERENCIA
+from .feature_engineering import FECHA_REFERENCIA
 
 
 def build_features(df):

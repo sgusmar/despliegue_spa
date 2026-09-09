@@ -26,9 +26,9 @@ import threading
 
 import pandas as pd
 
-import train_model
-from model_service import obtener_artefacto
-from train_model import ErrorDeReentrenamiento, ReentrenamientoEnCurso, reentrenar
+from . import train_model
+from .model_service import obtener_artefacto
+from .train_model import ErrorDeReentrenamiento, ReentrenamientoEnCurso, reentrenar
 
 # Un reentrenamiento a la vez: si llegan dos peticiones simultáneas, la segunda
 # recibe un 409 en vez de pelearse con la primera por escribir el mismo fichero.

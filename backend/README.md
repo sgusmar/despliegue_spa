@@ -5,15 +5,34 @@ permite reentrenarlo con datos nuevos. Se despliega en Render como Web Service.
 
 ## Estructura
 
+```
+backend/
+├── main.py              único fichero con Flask
+├── requirements.txt
+├── README.md
+├── app/                 lógica de dominio, sin Flask
+│   ├── model_service.py
+│   ├── train_model.py
+│   ├── retrain.py
+│   ├── utils/
+│   └── README_reentrenamiento.md
+├── tests/
+├── data/                CSV de ocupación
+└── models/              artefactos serializados
+```
+
 | Fichero | Responsabilidad |
 |---|---|
 | `main.py` | **Único fichero con Flask**: todas las rutas, la validación de la forma de la petición y los `errorhandler`. |
-| `model_service.py` | Artefacto del modelo (carga cacheada) y predicción, individual y por rangos. Sin framework. |
-| `train_model.py` | Reentrenamiento, validación de datasets y lectura del histórico. Sin framework. |
-| `retrain.py` | Ingesta del CSV que llega por `POST /retrain`. Sin framework. |
-| `utils/` | Ingeniería de características, compartida por entrenamiento y predicción. |
-| `data/` | CSV de ocupación (`fecha_cita,tramo,n_citas`). |
-| `models/` | Artefactos serializados (ver más abajo). |
+| `app/model_service.py` | Artefacto del modelo (carga cacheada) y predicción, individual y por rangos. Sin framework. |
+| `app/train_model.py` | Reentrenamiento, validación de datasets y lectura del histórico. Sin framework. |
+| `app/retrain.py` | Ingesta del CSV que llega por `POST /retrain`. Sin framework. |
+| `app/utils/` | Ingeniería de características, compartida por entrenamiento y predicción. |
+| `data/` | CSV de ocupación (`fecha_cita,tramo,n_citas`). No se mueve dentro de `app/`: es un recurso, no código. |
+| `models/` | Artefactos serializados (ver más abajo). Tampoco se mueve, por el mismo motivo. |
+
+`data/` y `models/` siguen siendo hermanos de `main.py`, no hijos de `app/`:
+son recursos y artefactos, no código de aplicación.
 
 ### Los dos artefactos
 
@@ -170,7 +189,7 @@ El artefacto vigente se cachea en memoria y se recarga solo cuando el fichero
 cambia, así que un reentrenamiento surte efecto sin reiniciar el servicio.
 
 Detalles del lane de reentrenamiento en
-[README_reentrenamiento.md](README_reentrenamiento.md).
+[app/README_reentrenamiento.md](app/README_reentrenamiento.md).
 
 ## Desarrollo local
 

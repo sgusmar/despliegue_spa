@@ -7,10 +7,12 @@ import joblib
 import numpy as np
 import pandas as pd
 
-from utils.feature_engineering import construir_features_df
-from utils.preprocessing import build_features
+from .utils.feature_engineering import construir_features_df
+from .utils.preprocessing import build_features
 
-MODELS_DIR = Path(__file__).resolve().parent / 'models'
+# .parent.parent: este fichero vive en app/, y models/ es hermano de app/, no
+# hijo suyo (backend/models/, no backend/app/models/).
+MODELS_DIR = Path(__file__).resolve().parent.parent / 'models'
 
 # Artefacto de fábrica: viaja versionado en el repositorio y NUNCA se
 # sobrescribe. Por eso volver al original es siempre posible, y no depende de

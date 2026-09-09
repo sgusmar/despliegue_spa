@@ -18,10 +18,10 @@ import pandas as pd
 from flask import Flask, jsonify, request
 from werkzeug.exceptions import HTTPException
 
-import model_service
-import retrain
-import train_model
-from train_model import ErrorDeReentrenamiento, ReentrenamientoEnCurso
+from app import model_service
+from app import retrain
+from app import train_model
+from app.train_model import ErrorDeReentrenamiento, ReentrenamientoEnCurso
 
 # Si el servidor define RETRAIN_TOKEN, POST /retrain exige esta cabecera.
 NOMBRE_CABECERA_TOKEN = 'X-Retrain-Token'

@@ -10,9 +10,9 @@ import joblib
 import pandas as pd
 
 import main
-import model_service as servicio
-import retrain
-import train_model as t
+from app import model_service as servicio
+from app import retrain
+from app import train_model as t
 
 CSV_NUEVO = 'fecha_cita,tramo,n_citas\n2026-07-01,manana,3\n2026-07-01,tarde,5\n'
 INFORME_OK = {'estado': 'reemplazado', 'entrenado_hasta': '2026-07-01',

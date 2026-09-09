@@ -39,11 +39,13 @@ from sklearn.ensemble import RandomForestRegressor
 from sklearn.metrics import mean_absolute_error
 from sklearn.preprocessing import StandardScaler
 
-from utils.feature_engineering import construir_features_df
-from utils.preprocessing import build_features
-from model_service import cargar_artefacto, invalidar_cache, predecir_features
+from .utils.feature_engineering import construir_features_df
+from .utils.preprocessing import build_features
+from .model_service import cargar_artefacto, invalidar_cache, predecir_features
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+# Un nivel más arriba que este fichero (que ahora vive en app/): data/ y
+# models/ son hermanos de app/, no hijos suyos.
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA_DIR = os.path.join(BASE_DIR, "data")
 MODELS_DIR = os.path.join(BASE_DIR, "models")
 BACKUP_DIR = os.path.join(MODELS_DIR, "backup")
