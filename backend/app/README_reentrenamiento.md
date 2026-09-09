@@ -38,18 +38,38 @@ solo tras confirmar que no hay entrenamiento activo.
 
 ## Calidad
 
-Los últimos 60 días se reservan para validación; deben ser posteriores al último
-entrenamiento vigente. Sin suficientes días nuevos se devuelve 400 y se conserva
-el modelo. El candidato y su scaler se ajustan únicamente con datos anteriores.
-En las mismas filas se comparan candidato, modelo vigente y baseline que repite
-la última semana disponible al corte, sin consumir observaciones de validación.
-Si faltan datos de esa semana, se solicita corregir el dataset.
+**[Actualizado: la validación se relajó tras uso real — ver `evaluar_holdout`
+y `_reentrenar` en `train_model.py` para el detalle exacto; lo de abajo queda
+como contexto histórico de las dos primeras versiones.]**
 
-El candidato debe igualar o mejorar ambos MAE y cumplir el techo adicional
-histórico de 2,46. Se compara sin redondear. Sin modelo anterior se aplican
-baseline y techo. Después de aceptar, se reajusta con todo el histórico.
-Se guarda `validacion` con método holdout_temporal, fechas, tamaños y las tres
-métricas; no se denomina CV. El antiguo test incorporado al entrenamiento deja
+Se exige que haya filas nuevas de verdad (más que cuando se entrenó el modelo
+vigente); sin eso, 400. Con eso claro, los últimos `dias` días se reservan
+para validación — pero esa ventana se adapta: si las filas nuevas extienden el
+horizonte, se acorta a los días realmente posteriores al `entrenado_hasta`
+vigente (mínimo 7); si rellenan un hueco histórico, no hay "días nuevos" al
+final que aislar, así que se usa la ventana completa sobre el tramo final ya
+conocido. El candidato y su scaler se ajustan únicamente con datos anteriores
+al corte.
+
+**El umbral de aceptación es relativo al modelo vigente, no fijo.** Se acepta
+si el MAE del candidato no empeora claramente el del modelo vigente en esa
+misma ventana (margen `MARGEN_TOLERANCIA_MAE`, 10%). El baseline semanal (t-7)
+se sigue calculando y reportando, pero ya no forma parte del criterio de
+aceptación: exigir batirlo además del modelo vigente rechazaba
+reentrenamientos con datos reales válidos solo porque esa ventana concreta
+favorecía a ese baseline ingenuo, no porque el candidato fuera peor que lo que
+ya está en producción. Sin modelo anterior con el que comparar (primer
+entrenamiento) se usa el techo histórico fijo `MAE_MAXIMO_ACEPTABLE` (2,46)
+como única red de seguridad.
+
+**El CSV subido se conserva aunque el candidato no se publique.** Son datos
+reales; que no batan al modelo vigente en esta validación concreta no los
+invalida como observaciones — se quedan en `data/` para el próximo intento.
+Solo se retiran si ni siquiera se ha podido evaluar (p. ej. sin filas nuevas).
+
+Después de aceptar, se reajusta con todo el histórico. Se guarda `validacion`
+con método holdout_temporal, fechas, tamaños y las tres métricas; no se
+denomina CV. El antiguo test incorporado al entrenamiento deja
 de ser una evaluación independiente del nuevo modelo.
 
 ## Datos y API

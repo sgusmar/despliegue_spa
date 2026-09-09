@@ -243,7 +243,12 @@ class ReentrenamientoTests(unittest.TestCase):
                          ['fecha_cita,tramo,n_citas', '2026-07-01,mañana,3'])
         self.assertEqual(len(t.cargar_datasets(self.root)[0]), 2)
 
-    def test_retrain_retira_el_csv_si_el_modelo_se_descarta(self):
+    def test_retrain_conserva_el_csv_si_el_modelo_se_descarta(self):
+        """
+        Descartar el modelo candidato no debe descartar los datos: son
+        observaciones reales, solo que ese candidato no batió al vigente en
+        esta validación. Se quedan en data/ para el próximo intento.
+        """
         cliente = main.create_app(data_dir=self.root, model_path=self.base).test_client()
         with patch.object(retrain, 'reentrenar', return_value={
                 'estado': 'descartado', 'motivo': 'MAE peor que el umbral.'}):
@@ -252,6 +257,16 @@ class ReentrenamientoTests(unittest.TestCase):
         self.assertEqual(respuesta.status_code, 200)
         self.assertEqual(respuesta.get_json()['status'], 'error')
         self.assertEqual(respuesta.get_json()['rowsIngested'], 2)
+        subidos = list(self.root.glob('subida_*.csv'))
+        self.assertEqual(len(subidos), 1)
+        self.assertIn('2026-07-01', subidos[0].read_text(encoding='utf-8'))
+
+    def test_retrain_retira_el_csv_si_ni_siquiera_se_evalua(self):
+        """Si reentrenar() ni llega a evaluar (excepción), ahí sí no queda nada válido que conservar."""
+        cliente = main.create_app(data_dir=self.root, model_path=self.base).test_client()
+        with patch.object(retrain, 'reentrenar', side_effect=t.ErrorDeReentrenamiento('fallo simulado')):
+            respuesta = cliente.post('/retrain', json={'csvText': CSV_NUEVO})
+        self.assertEqual(respuesta.status_code, 400)
         self.assertFalse(list(self.root.glob('subida_*.csv')))
 
     def test_retrain_acepta_el_csv_como_archivo(self):
