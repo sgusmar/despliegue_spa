@@ -1,0 +1,47 @@
+services:
+  # Backend — Flask (WSGI) servido con gunicorn.
+  - type: web
+    name: spa-occupancy-backend
+    runtime: python
+    rootDir: backend
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    # 1 worker porque el plan free son 512 MB y cada worker carga pandas,
+    # scikit-learn y el RandomForest entero. Los hilos dan concurrencia sin
+    # duplicar memoria, y así el candado del reentrenamiento sigue siendo
+    # efectivo. El timeout largo cubre el reentrenamiento, que es síncrono.
+    startCommand: gunicorn --workers 1 --threads 4 --timeout 180 --bind 0.0.0.0:$PORT main:app
+    healthCheckPath: /health
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.13.15"
+      # Protege POST /retrain exigiendo la cabecera X-Retrain-Token.
+      # OJO: si se activa, la página de reentrenamiento del frontend devuelve
+      # 401, porque el navegador no puede guardar el token de forma segura.
+      # - key: RETRAIN_TOKEN
+      #   sync: false
+
+  # Frontend — React + Vite, Static Site.
+  - type: web
+    name: spa-occupancy-frontend
+    runtime: static
+    rootDir: frontend
+    buildCommand: npm ci && npm run build
+    staticPublishPath: ./dist
+    envVars:
+      - key: VITE_API_URL
+        value: /api
+    routes:
+      # El orden es la prioridad: gana la primera regla que casa. Si el
+      # catch-all del SPA fuese antes, TODAS las llamadas a la API devolverían
+      # index.html y el frontend fallaría al parsear JSON.
+      #
+      # El destino tiene que ser la URL absoluta del backend, que no se conoce
+      # hasta el primer deploy (Render añade sufijo si el nombre ya está
+      # cogido): tras desplegar, comprobar la URL real y corregirla aquí.
+      - type: rewrite
+        source: /api/*
+        destination: https://spa-occupancy-backend.onrender.com/*
+      - type: rewrite
+        source: /*
+        destination: /index.html

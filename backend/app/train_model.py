@@ -39,15 +39,22 @@ from sklearn.ensemble import RandomForestRegressor
 from sklearn.metrics import mean_absolute_error
 from sklearn.preprocessing import StandardScaler
 
-from utils.feature_engineering import construir_features_df
-from utils.preprocessing import build_features
-from model_service import cargar_artefacto, predecir_features
+from .utils.feature_engineering import construir_features_df
+from .utils.preprocessing import build_features
+from .model_service import cargar_artefacto, invalidar_cache, predecir_features
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+# Un nivel más arriba que este fichero (que ahora vive en app/): data/ y
+# models/ son hermanos de app/, no hijos suyos.
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA_DIR = os.path.join(BASE_DIR, "data")
 MODELS_DIR = os.path.join(BASE_DIR, "models")
 BACKUP_DIR = os.path.join(MODELS_DIR, "backup")
-MODEL_PATH = os.path.join(MODELS_DIR, "modelo_ocupacion.joblib")
+# El artefacto de fábrica es de solo lectura: el reentrenamiento publica
+# siempre en MODEL_ACTIVE_PATH, y model_service da prioridad a ese fichero si
+# existe. Así restaurar el original es borrar un fichero, no recuperar una
+# copia de seguridad y confiar en que esté intacta.
+MODEL_BASE_PATH = os.path.join(MODELS_DIR, "modelo_ocupacion.joblib")
+MODEL_ACTIVE_PATH = os.path.join(MODELS_DIR, "modelo_reentrenado.joblib")
 SCALER_PATH = os.path.join(MODELS_DIR, "scaler.joblib")
 
 # Dataset base del proyecto original. Cualquier CSV adicional que se añada a
@@ -88,6 +95,10 @@ DIAS_VALIDACION = 60
 # con los datos nuevos y no se despliega.
 MAE_MAXIMO_ACEPTABLE = 2.46
 
+# Mínimo de días posteriores al entrenamiento vigente para poder validar un
+# reentrenamiento incremental (ver evaluar_holdout).
+MIN_DIAS_NUEVOS = 7
+
 
 class ErrorDeReentrenamiento(Exception):
     """Fallo controlado durante el reentrenamiento (datos inválidos, etc.)."""
@@ -122,6 +133,39 @@ def listar_datasets(data_dir=DATA_DIR):
     return rutas
 
 
+def validar_dataset(df, nombre="dataset"):
+    """
+    Comprueba el contrato de columnas y devuelve la rejilla normalizada.
+
+    La usan tanto la lectura de los CSV de data/ como la ingesta del CSV que
+    llega por /retrain, para que un fichero subido se valide exactamente con
+    las mismas reglas con las que se leerá después desde disco.
+    """
+    if df.empty:
+        raise ErrorDeReentrenamiento(nombre + ': dataset vacío.')
+    faltan = [c for c in COLUMNAS_REQUERIDAS if c not in df.columns]
+    if faltan:
+        raise ErrorDeReentrenamiento(
+            "{}: faltan las columnas {}. Se esperan al menos {}.".format(
+                nombre, faltan, COLUMNAS_REQUERIDAS
+            )
+        )
+    df = df[COLUMNAS_REQUERIDAS].copy()
+    if not df['fecha_cita'].astype(str).str.fullmatch(r'\d{4}-\d{2}-\d{2}').all():
+        raise ErrorDeReentrenamiento('fecha_cita debe tener formato YYYY-MM-DD.')
+    df["fecha_cita"] = pd.to_datetime(df["fecha_cita"], format='%Y-%m-%d', errors="coerce")
+    if df["fecha_cita"].isna().any():
+        raise ErrorDeReentrenamiento(nombre + ": hay fechas que no se han podido leer.")
+    if df['fecha_cita'].dt.tz is not None or (df['fecha_cita'] != df['fecha_cita'].dt.normalize()).any():
+        raise ErrorDeReentrenamiento('Las fechas deben ser días sin hora ni zona horaria.')
+    if not df['tramo'].isin(['mañana', 'tarde']).all():
+        raise ErrorDeReentrenamiento('tramo debe ser mañana o tarde.')
+    df['n_citas'] = pd.to_numeric(df['n_citas'], errors='coerce')
+    if not (np.isfinite(df['n_citas']) & (df['n_citas'] >= 0) & (df['n_citas'] % 1 == 0)).all():
+        raise ErrorDeReentrenamiento('n_citas debe contener enteros no negativos y finitos.')
+    return df
+
+
 def cargar_datasets(data_dir=DATA_DIR):
     """
     Concatena todos los CSV de data/ en una única rejilla fecha x tramo.
@@ -138,41 +182,52 @@ def cargar_datasets(data_dir=DATA_DIR):
 
     trozos, informe = [], []
     for ruta in rutas:
+        nombre = os.path.basename(ruta)
         try:
             df = pd.read_csv(ruta)
         except (pd.errors.ParserError, pd.errors.EmptyDataError, UnicodeError) as exc:
-            raise ErrorDeReentrenamiento(os.path.basename(ruta) + ': CSV inválido.') from exc
-        if df.empty:
-            raise ErrorDeReentrenamiento(os.path.basename(ruta) + ': dataset vacío.')
-        faltan = [c for c in COLUMNAS_REQUERIDAS if c not in df.columns]
-        if faltan:
-            raise ErrorDeReentrenamiento(
-                "{}: faltan las columnas {}. Se esperan al menos {}.".format(
-                    os.path.basename(ruta), faltan, COLUMNAS_REQUERIDAS
-                )
-            )
-        df = df[COLUMNAS_REQUERIDAS].copy()
-        if not df['fecha_cita'].astype(str).str.fullmatch(r'\d{4}-\d{2}-\d{2}').all():
-            raise ErrorDeReentrenamiento('fecha_cita debe tener formato YYYY-MM-DD.')
-        df["fecha_cita"] = pd.to_datetime(df["fecha_cita"], format='%Y-%m-%d', errors="coerce")
-        if df["fecha_cita"].isna().any():
-            raise ErrorDeReentrenamiento(
-                os.path.basename(ruta) + ": hay fechas que no se han podido leer."
-            )
-        if df['fecha_cita'].dt.tz is not None or (df['fecha_cita'] != df['fecha_cita'].dt.normalize()).any():
-            raise ErrorDeReentrenamiento('Las fechas deben ser días sin hora ni zona horaria.')
-        if not df['tramo'].isin(['mañana', 'tarde']).all():
-            raise ErrorDeReentrenamiento('tramo debe ser mañana o tarde.')
-        df['n_citas'] = pd.to_numeric(df['n_citas'], errors='coerce')
-        if not (np.isfinite(df['n_citas']) & (df['n_citas'] >= 0) & (df['n_citas'] % 1 == 0)).all():
-            raise ErrorDeReentrenamiento('n_citas debe contener enteros no negativos y finitos.')
+            raise ErrorDeReentrenamiento(nombre + ': CSV inválido.') from exc
+        df = validar_dataset(df, nombre)
         trozos.append(df)
-        informe.append({"fichero": os.path.basename(ruta), "filas": int(len(df))})
+        informe.append({"fichero": nombre, "filas": int(len(df))})
 
     completo = pd.concat(trozos, ignore_index=True)
     completo = completo.drop_duplicates(subset=["fecha_cita", "tramo"], keep="last")
     completo = completo.sort_values(["fecha_cita", "tramo"]).reset_index(drop=True)
     return completo, informe
+
+
+_historico = {'clave': None, 'df': None}
+
+
+def _clave_datos(data_dir):
+    """Huella de los CSV de data/, para saber si el histórico cacheado sigue vigente."""
+    huella = []
+    for ruta in listar_datasets(data_dir):
+        estado = os.stat(ruta)
+        huella.append((os.path.basename(ruta), estado.st_mtime_ns, estado.st_size))
+    return tuple(huella)
+
+
+def cargar_historico(data_dir=DATA_DIR):
+    """
+    Rejilla fecha x tramo real, ya validada y deduplicada, cacheada en memoria.
+
+    Reutiliza cargar_datasets() a propósito: así el histórico que se muestra en
+    el gráfico incluye automáticamente lo que se haya subido por /retrain, y no
+    hay dos caminos distintos de leer los mismos datos.
+    """
+    clave = _clave_datos(data_dir)
+    if _historico['clave'] != clave:
+        df, _ = cargar_datasets(data_dir)
+        _historico['clave'], _historico['df'] = clave, df
+    return _historico['df']
+
+
+def historico_por_rango(desde, hasta, data_dir=DATA_DIR):
+    """Ocupación observada entre dos fechas, ambas incluidas (copia, no vista)."""
+    df = cargar_historico(data_dir)
+    return df[(df['fecha_cita'] >= desde) & (df['fecha_cita'] <= hasta)]
 
 
 def preparar_xy(df):
@@ -212,14 +267,42 @@ def evaluar_holdout(X, y, fechas, dias=DIAS_VALIDACION, actual=None):
     MAE honesto del pipeline con los datos actuales: se entrena con todo menos
     los últimos `dias` días y se mide contra ellos. Corte temporal, nunca
     aleatorio — es una serie temporal.
-    """
-    corte = fechas.max() - pd.Timedelta(days=dias)
-    es_train = fechas <= corte
 
-    if actual is not None and corte < pd.Timestamp(actual['entrenado_hasta']):
-        raise ErrorDeReentrenamiento(
-            'No hay suficientes días nuevos: la validación debe ser posterior al entrenamiento vigente.'
-        )
+    Si hay un modelo anterior, primero se comprueba que hay filas nuevas de
+    verdad (más de las que había cuando se entrenó `actual`): sin eso, sería
+    reentrenar y republicar sin ninguna información nueva. Con eso claro, hay
+    dos formas de que esas filas nuevas sean válidas:
+
+    - **Extienden el horizonte**: hay `dias_nuevos` posteriores al
+      `entrenado_hasta` vigente. La ventana se acorta (nunca se alarga) a esos
+      días — así una semana recién subida no necesita acumular `dias` días de
+      margen para poder validarse; el hold-out son exactamente esos días
+      nuevos, ni más (no existen) ni menos.
+    - **Rellenan un hueco histórico**: las filas nuevas tienen fecha anterior
+      a la máxima ya registrada, así que no hay "días nuevos" al final que
+      aislar como hold-out. En ese caso se usa la ventana `dias` completa
+      sobre el tramo final ya conocido: se revalida si incorporar esas filas
+      mejora o empeora el modelo ahí, comparado con el vigente.
+    """
+    fecha_max = fechas.max()
+    filas_disponibles = len(fechas)
+
+    if actual is not None:
+        filas_anteriores = actual.get('filas_disponibles')
+        if filas_anteriores is not None and filas_disponibles <= filas_anteriores:
+            raise ErrorDeReentrenamiento(
+                'Los datos no han cambiado desde el último entrenamiento: no hay nada nuevo que validar.'
+            )
+        dias_nuevos = (fecha_max - pd.Timestamp(actual['entrenado_hasta'])).days
+        if dias_nuevos >= MIN_DIAS_NUEVOS:
+            dias = min(dias, dias_nuevos)
+        # Si no, hay filas nuevas (ya comprobado arriba) pero no extienden el
+        # horizonte lo suficiente — un hueco histórico o un incremento de
+        # menos de MIN_DIAS_NUEVOS días — así que se valida con la ventana
+        # `dias` completa tal cual, en vez de rechazar.
+
+    corte = fecha_max - pd.Timedelta(days=dias)
+    es_train = fechas <= corte
 
     if es_train.sum() == 0 or (~es_train).sum() == 0:
         raise ErrorDeReentrenamiento(
@@ -259,16 +342,24 @@ def evaluar_holdout(X, y, fechas, dias=DIAS_VALIDACION, actual=None):
 
 
 def _guardar_copia_de_seguridad():
-    """Aparta el artefacto vigente antes de sobrescribirlo."""
-    if not os.path.exists(MODEL_PATH):
+    """
+    Aparta el modelo reentrenado anterior antes de sobrescribirlo.
+
+    El artefacto de fábrica no se copia porque nunca se toca: si no ha habido
+    ningún reentrenamiento previo, no hay nada que salvar.
+    """
+    if not os.path.exists(MODEL_ACTIVE_PATH):
         return None
     os.makedirs(BACKUP_DIR, exist_ok=True)
     sello = dt.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-    destino = os.path.join(BACKUP_DIR, "modelo_ocupacion_" + sello + ".joblib")
-    shutil.copy2(MODEL_PATH, destino)
-    if os.path.exists(SCALER_PATH):
-        shutil.copy2(SCALER_PATH, os.path.join(BACKUP_DIR, "scaler_" + sello + ".joblib"))
-    return os.path.relpath(destino, BASE_DIR).replace(os.sep, "/")
+    destino = os.path.join(BACKUP_DIR, "modelo_reentrenado_" + sello + ".joblib")
+    shutil.copy2(MODEL_ACTIVE_PATH, destino)
+    try:
+        return os.path.relpath(destino, BASE_DIR).replace(os.sep, "/")
+    except ValueError:
+        # En Windows relpath revienta si destino y BASE_DIR están en unidades
+        # distintas (pasa en los tests, con el tmp en C: y el repo en D:).
+        return destino.replace(os.sep, "/")
 
 
 def reentrenar(data_dir=DATA_DIR, dias_validacion=DIAS_VALIDACION):
@@ -289,7 +380,11 @@ def _reentrenar(data_dir, dias_validacion):
     df, fuentes = cargar_datasets(data_dir)
     X, y, fechas = preparar_xy(df)
 
-    actual = cargar_artefacto(MODEL_PATH) if os.path.exists(MODEL_PATH) else None
+    # Mismo criterio que model_service.ruta_modelo_vigente(), pero con las
+    # constantes de este módulo, que son las que los tests redirigen a un
+    # directorio temporal.
+    vigente = MODEL_ACTIVE_PATH if os.path.exists(MODEL_ACTIVE_PATH) else MODEL_BASE_PATH
+    actual = cargar_artefacto(vigente) if os.path.exists(vigente) else None
     validacion = evaluar_holdout(X, y, fechas, dias_validacion, actual)
     mae_anterior = validacion['mae_modelo_actual']
     umbral = min(MAE_MAXIMO_ACEPTABLE, validacion['mae_baseline'],
@@ -332,6 +427,9 @@ def _reentrenar(data_dir, dias_validacion):
         "version": uuid.uuid4().hex,
         "validacion": validacion,
         "entrenado_hasta": str(fechas.max().date()),
+        # Para que el próximo reentrenamiento sepa si de verdad hay filas
+        # nuevas (extiendan el horizonte o rellenen un hueco histórico).
+        "filas_disponibles": len(X),
         "mejores_params": {
             k: v for k, v in HIPERPARAMETROS.items() if k != "random_state"
         },
@@ -345,7 +443,10 @@ def _reentrenar(data_dir, dias_validacion):
     try:
         joblib.dump(artefacto, temporal)
         cargar_artefacto(temporal)
-        os.replace(temporal, MODEL_PATH)
+        os.replace(temporal, MODEL_ACTIVE_PATH)
+        # El mtime del fichero ya bastaría, pero invalidar explícitamente cubre
+        # también el uso por CLI (python train_model.py) dentro del mismo proceso.
+        invalidar_cache()
     finally:
         if os.path.exists(temporal):
             os.unlink(temporal)
