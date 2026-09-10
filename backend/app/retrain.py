@@ -1,0 +1,184 @@
+"""
+Ingesta del CSV de reentrenamiento (extra voluntario del enunciado).
+
+Este módulo no define rutas: el enrutado vive entero en `main.py`. Aquí está
+solo la lógica de qué hacer con el CSV que llega — validarlo, añadirlo al
+histórico de `data/` y lanzar el reentrenamiento de `train_model.py` — y la
+traducción del informe técnico a la respuesta que espera el frontend.
+
+Decisiones importantes:
+
+* **El CSV subido se suma al histórico, no lo reemplaza.** Se guarda como un
+  fichero más de `data/` con un nombre que ordena después del dataset base,
+  porque `cargar_datasets()` deduplica con `keep="last"`: así una subida puede
+  corregir cifras del histórico sin editar el fichero original a mano.
+* **El CSV se conserva aunque el modelo no se publique.** Son datos reales:
+  que el candidato entrenado con ellos no bata al modelo vigente en esta
+  validación concreta no los invalida como observaciones, así que se quedan
+  en `data/` (alimentan el gráfico del año anterior y el próximo intento de
+  reentrenamiento) aunque el modelo activo no cambie. Solo se retira si ni
+  siquiera se ha podido evaluar (p. ej. no aporta ninguna fila nueva).
+"""
+import datetime as dt
+import glob
+import io
+import os
+import shutil
+import threading
+
+import pandas as pd
+
+from . import train_model
+from .model_service import obtener_artefacto
+from .train_model import ErrorDeReentrenamiento, ReentrenamientoEnCurso, reentrenar
+
+# Un reentrenamiento a la vez: si llegan dos peticiones simultáneas, la segunda
+# recibe un 409 en vez de pelearse con la primera por escribir el mismo fichero.
+_candado = threading.Lock()
+
+
+def info_modelo(model_path=None):
+    """Estado del artefacto desplegado ahora mismo (para GET /retrain)."""
+    try:
+        art = obtener_artefacto(model_path)
+    except RuntimeError as exc:
+        return {'disponible': False, 'error': str(exc)}
+    mae = art.get('validacion', {}).get('mae', art.get('mae_cv'))
+    return {
+        'disponible': True,
+        'algoritmo': art.get('nombre'),
+        'entrenado_hasta': art.get('entrenado_hasta'),
+        # float() explícito: mae_cv viene del entrenamiento como np.float64 y
+        # jsonify no sabe serializar escalares de numpy.
+        'mae': None if mae is None else round(float(mae), 3),
+        'version_modelo': art.get('version', 'original'),
+        'reentrenado_el': art.get('reentrenado_el', 'nunca (artefacto original)'),
+    }
+
+
+def parsear_y_validar(csv_texto):
+    """Texto CSV -> rejilla validada con las mismas reglas que los CSV de data/."""
+    try:
+        df = pd.read_csv(io.StringIO(csv_texto))
+    except (pd.errors.ParserError, pd.errors.EmptyDataError, UnicodeError) as exc:
+        raise ErrorDeReentrenamiento('El CSV no se ha podido leer.') from exc
+    if 'tramo' in df.columns:
+        # Tolerante en la entrada (el frontend manda 'manana' sin ñ), canónico
+        # en el disco. Un valor desconocido se deja intacto para que sea
+        # validar_dataset quien dé el error, y no dos mensajes distintos.
+        df['tramo'] = df['tramo'].astype(str).str.strip().str.lower().replace({'manana': 'mañana'})
+    return train_model.validar_dataset(df, 'CSV recibido')
+
+
+def _persistir(df, data_dir):
+    """Guarda el CSV recibido en data/, de forma atómica y ordenable."""
+    sello = dt.datetime.now().strftime('%Y%m%d_%H%M%S_%f')
+    # El nombre tiene que ordenar DESPUÉS de ocupacion_tramos.csv: listar_datasets()
+    # ordena alfabéticamente y cargar_datasets() deduplica con keep="last".
+    destino = os.path.join(str(data_dir), 'subida_' + sello + '.csv')
+    temporal = destino + '.tmp'  # .tmp para que listar_datasets() no lo vea a medio escribir
+    # validar_dataset devuelve fecha_cita como datetime y n_citas como float; si
+    # se volcaran así, la validación estricta de la siguiente lectura los
+    # rechazaría ('2026-07-01 00:00:00' y '12.0').
+    df.assign(
+        fecha_cita=df['fecha_cita'].dt.strftime('%Y-%m-%d'),
+        n_citas=df['n_citas'].astype(int),
+    ).to_csv(temporal, index=False, encoding='utf-8')
+    os.replace(temporal, destino)
+    return destino
+
+
+def ingerir_y_reentrenar(csv_texto, data_dir=None, dias_validacion=None):
+    """Valida el CSV, lo añade al histórico y reentrena con todo lo que haya."""
+    data_dir = data_dir or train_model.DATA_DIR
+    df = parsear_y_validar(csv_texto)
+    filas = int(len(df))
+
+    if not _candado.acquire(blocking=False):
+        raise ReentrenamientoEnCurso('Ya hay un reentrenamiento en curso. Espera a que termine.')
+    try:
+        destino = _persistir(df, data_dir)
+        try:
+            informe = reentrenar(
+                data_dir=data_dir,
+                dias_validacion=dias_validacion or train_model.DIAS_VALIDACION,
+            )
+        except Exception:
+            # No se ha podido ni evaluar (datos sin novedad, fallo de E/S...):
+            # aquí sí se retira, no hay nada válido que conservar.
+            os.unlink(destino)
+            raise
+        # Si el modelo se descarta por calidad ("descartado"), el CSV SE
+        # CONSERVA: son datos reales que sí se evaluaron, solo que el modelo
+        # candidato no batió al vigente. Descartarlos junto con el modelo
+        # los haría desaparecer sin que quedase rastro, y el próximo
+        # reentrenamiento partiría de menos información que la disponible.
+    finally:
+        _candado.release()
+
+    return _a_respuesta(informe, filas)
+
+
+def restaurar_original(data_dir=None):
+    """
+    Vuelve al estado de fábrica: descarta el modelo reentrenado y los CSV
+    subidos, de modo que el siguiente reentrenamiento parta del histórico
+    original.
+
+    No hace falta invalidar la caché: está indexada por ruta, y al desaparecer
+    el modelo reentrenado la siguiente lectura ya apunta al de fábrica.
+    """
+    data_dir = data_dir or train_model.DATA_DIR
+    if not _candado.acquire(blocking=False):
+        raise ReentrenamientoEnCurso('Hay un reentrenamiento en curso. Espera a que termine.')
+    try:
+        habia_modelo = os.path.exists(train_model.MODEL_ACTIVE_PATH)
+        if habia_modelo:
+            os.unlink(train_model.MODEL_ACTIVE_PATH)
+        subidos = sorted(glob.glob(os.path.join(str(data_dir), 'subida_*.csv')))
+        for ruta in subidos:
+            os.unlink(ruta)
+        shutil.rmtree(train_model.BACKUP_DIR, ignore_errors=True)
+    finally:
+        _candado.release()
+
+    if not habia_modelo and not subidos:
+        return {'status': 'ok', 'modelRestored': False, 'filesRemoved': 0,
+                'message': 'Ya estabas usando el modelo original: no había nada que restaurar.'}
+    return {
+        'status': 'ok',
+        'modelRestored': habia_modelo,
+        'filesRemoved': len(subidos),
+        'message': (
+            'Se ha restaurado el modelo original{}.'.format(
+                ' y se han eliminado {} fichero(s) de datos subidos'.format(len(subidos))
+                if subidos else ''
+            )
+        ),
+    }
+
+
+def _a_respuesta(informe, filas):
+    """Informe técnico del reentrenamiento -> {status, rowsIngested, message}."""
+    if informe['estado'] == 'reemplazado':
+        validacion = informe['validacion']
+        return {
+            'status': 'ok',
+            'rowsIngested': filas,
+            'message': (
+                'Se han incorporado {} filas y el modelo se ha reentrenado correctamente. '
+                'MAE de validación {:.2f} (baseline {:.2f}). Modelo entrenado hasta {}.'.format(
+                    filas, validacion['mae'], validacion['mae_baseline'],
+                    informe['entrenado_hasta'],
+                )
+            ),
+        }
+    return {
+        'status': 'error',
+        'rowsIngested': filas,
+        'message': (
+            'Se han recibido {} filas, pero el modelo NO se ha reemplazado: {}'.format(
+                filas, informe.get('motivo', '')
+            )
+        ),
+    }
