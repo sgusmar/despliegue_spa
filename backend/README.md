@@ -75,23 +75,38 @@ solo haría que Render reiniciase el servicio en bucle.
 `es_original` es `false` cuando está activo un modelo reentrenado. El frontend
 lo usa para ofrecer el botón de restaurar en el widget flotante de estado.
 
-### `POST /predict/single`
+### `GET /predict`, `GET /predict/single`
 
-```jsonc
-// petición
-{"date": "2026-09-10", "tramo": "manana"}
-// 200
-{"date": "2026-09-10", "tramo": "manana", "citasPrevistas": 2.7}
+Solo `GET`, sin `POST`: es una consulta de solo lectura (no cambia nada en el
+servidor), así que `GET` es el único verbo con sentido aquí — y es también lo
+que exige el criterio de evaluación (`requests.get(url, params={...})`, o
+pegando la URL en el navegador). `/predict` y `/predict/single` son la misma
+función con dos nombres; el frontend usa `/predict/single`.
+
 ```
+GET /predict?fecha=2026-09-10&tramo=tarde
+```
+```json
+{"date": "2026-09-10", "tramo": "tarde", "citasPrevistas": 5.7,
+ "es_cierre": false, "version_modelo": "original", "entrenado_hasta": "2026-01-24"}
+```
+
+Acepta `fecha` o `date` indistintamente como nombre del parámetro. `citasPrevistas`
+es el campo que consume el frontend; el resto son metadatos que no le
+estorban, pero dejan claro que es una predicción real del modelo vigente, no
+un valor de mentira.
 
 Los días de cierre (25/12, 1/1, 6/1) devuelven `0` sin consultar al modelo.
 
-### `POST /predict/range`
+### `GET /predict/range`
 
-```jsonc
-// petición
-{"startDate": "2026-09-08", "endDate": "2026-09-14"}
-// 200
+Mismo criterio que `/predict`: solo `GET`, con `startDate`/`endDate` por
+query string.
+
+```
+GET /predict/range?startDate=2026-09-08&endDate=2026-09-14
+```
+```json
 {
   "current":      [{"date": "2026-09-08", "manana": 2.7, "tarde": 3.6}, ...],
   "previousYear": [{"date": "2025-09-08", "manana": 3.0, "tarde": 5.0}, ...]

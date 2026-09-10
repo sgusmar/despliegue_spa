@@ -47,18 +47,33 @@ async function postJson<T>(path: string, body: unknown): Promise<T> {
   return res.json() as Promise<T>;
 }
 
+/** /predict/single y /predict/range son solo GET: sin cuerpo, parámetros por query string. */
+async function getJson<T>(path: string, params: Record<string, string>): Promise<T> {
+  const query = new URLSearchParams(params).toString();
+  const res = await fetch(`${API_URL}${path}?${query}`);
+
+  if (!res.ok) {
+    throw new Error(await readError(res, `Error ${res.status} al llamar a ${path}`));
+  }
+
+  return res.json() as Promise<T>;
+}
+
 export async function predictSingle(
   req: SinglePredictionRequest
 ): Promise<SinglePredictionResult> {
   if (USE_MOCK) return mockPredictSingle(req);
-  return postJson<SinglePredictionResult>("/predict/single", req);
+  return getJson<SinglePredictionResult>("/predict/single", { date: req.date, tramo: req.tramo });
 }
 
 export async function predictRange(
   req: RangePredictionRequest
 ): Promise<RangePredictionResult> {
   if (USE_MOCK) return mockPredictRange(req);
-  return postJson<RangePredictionResult>("/predict/range", req);
+  return getJson<RangePredictionResult>("/predict/range", {
+    startDate: req.startDate,
+    endDate: req.endDate,
+  });
 }
 
 export async function retrainWithText(csvText: string): Promise<RetrainResponse> {

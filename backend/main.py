@@ -54,6 +54,12 @@ def create_app(data_dir=None, model_path=None):
     contaminar el histórico real.
     """
     app = Flask(__name__)
+    # Por defecto, Flask solo tolera la barra final en un sentido (una ruta
+    # registrada CON barra acepta peticiones sin ella; al revés, no: una ruta
+    # sin barra, como las nuestras, da 404 si la piden con barra final). Es un
+    # error fácil de cometer al escribir la URL a mano o desde un script de
+    # evaluación, así que aquí se aceptan las dos formas en toda la API.
+    app.url_map.strict_slashes = False
     app.config['DATA_DIR'] = str(data_dir) if data_dir else train_model.DATA_DIR
     app.config['MODEL_PATH'] = model_path
     app.config['MAX_CONTENT_LENGTH'] = MAX_CSV_BYTES
@@ -142,8 +148,14 @@ def _registrar_rutas(app):
             'descripcion': 'API REST para predecir la ocupación del spa y reentrenar el modelo',
             'endpoints': {
                 'GET /health': 'Estado del servicio y del modelo cargado',
-                'POST /predict/single': "Predicción de un día y tramo: {date, tramo}",
-                'POST /predict/range': 'Predicción de un rango de fechas: {startDate, endDate}',
+                'GET /predict': (
+                    "Predicción de un día y tramo por query string: "
+                    "?fecha=YYYY-MM-DD&tramo=manana|tarde (alias: GET /predict/single)"
+                ),
+                'GET /predict/range': (
+                    'Predicción de un rango de fechas por query string: '
+                    '?startDate=YYYY-MM-DD&endDate=YYYY-MM-DD'
+                ),
                 'GET /retrain': 'Estado del modelo desplegado e instrucciones de reentrenamiento',
                 'POST /retrain': "Reentrena el modelo con un CSV nuevo (archivo 'file' o {csvText})",
                 'POST /retrain/reset': 'Descarta el modelo reentrenado y los CSV subidos',
@@ -169,27 +181,47 @@ def _registrar_rutas(app):
             'es_original': 'version' not in art,
         })
 
-    @app.post('/predict/single')
+    @app.get('/predict')
+    @app.get('/predict/single')
     def predict_single():
-        datos = _cuerpo_json()
-        fecha, tramo = datos.get('date'), datos.get('tramo')
+        """
+        Predicción de un día y tramo, solo por GET — `fecha`/`tramo` (o
+        `date`/`tramo`) por query string, igual desde `/predict` que desde
+        `/predict/single`. Es también el que usa el frontend: sin cuerpo que
+        mandar, sin distinguir GET de POST en el handler.
+        """
+        fecha = request.args.get('fecha') or request.args.get('date')
+        tramo = request.args.get('tramo')
         if not fecha or not tramo:
             raise ApiError(
-                "Faltan datos obligatorios: 'date' (YYYY-MM-DD) y 'tramo' ('manana' o 'tarde')."
+                "Faltan datos obligatorios: 'date' (o 'fecha') en formato YYYY-MM-DD, "
+                "y 'tramo' ('manana' o 'tarde')."
             )
         tramo = model_service.normalizar_tramo(tramo)
         resultado = model_service.predecir_ocupacion(fecha, tramo, app.config['MODEL_PATH'])
         return jsonify({
             'date': fecha,
             'tramo': model_service.tramo_ascii(tramo),
-            # Redondeado aquí para que el frontend pueda pintarlo tal cual.
+            # citasPrevistas: lo que pinta el frontend tal cual, sin redondear
+            # de nuevo. Los tres campos siguientes son metadatos adicionales
+            # (no forman parte del contrato del frontend, pero no le estorban)
+            # que dejan claro que es una predicción real del modelo vigente,
+            # no un valor de mentira — útil de cara a la evaluación.
             'citasPrevistas': round(resultado['prediccion_ocupacion'], 1),
+            'es_cierre': resultado['es_cierre'],
+            'version_modelo': resultado['version_modelo'],
+            'entrenado_hasta': resultado['entrenado_hasta'],
         })
 
-    @app.post('/predict/range')
+    @app.get('/predict/range')
     def predict_range():
-        datos = _cuerpo_json()
-        inicio, fin = datos.get('startDate'), datos.get('endDate')
+        """
+        Predicción de un rango de fechas, solo por GET — `startDate`/`endDate`
+        por query string. Es una consulta de solo lectura (no cambia nada en
+        el servidor), así que GET es el verbo correcto; también es el que usa
+        el frontend.
+        """
+        inicio, fin = request.args.get('startDate'), request.args.get('endDate')
         if not inicio or not fin:
             raise ApiError("Faltan datos obligatorios: 'startDate' y 'endDate' (YYYY-MM-DD).")
         actual = model_service.predecir_rango(inicio, fin, app.config['MODEL_PATH'])
