@@ -246,8 +246,15 @@ DOCS_HTML = """<!doctype html>
   <script src="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5.17.14/swagger-ui-bundle.js"></script>
   <script>
     window.onload = function () {
+      // No se fija "/openapi.json" a secas: esta página se sirve tanto en
+      // /docs (backend directo) como en /api/docs (a través del proxy del
+      // frontend). Una ruta absoluta ignoraría el prefijo /api y el
+      // navegador pediría el spec en la raíz del frontend, donde no existe
+      // (cae en el index.html de la SPA). Se calcula relativa a esta misma
+      // página, sea cual sea el prefijo por el que se haya entrado.
+      var specUrl = window.location.pathname.replace(/\\/docs\\/?$/, "/openapi.json");
       window.ui = SwaggerUIBundle({
-        url: "/openapi.json",
+        url: specUrl,
         dom_id: "#swagger-ui",
         presets: [SwaggerUIBundle.presets.apis],
       });
