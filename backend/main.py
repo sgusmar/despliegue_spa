@@ -15,12 +15,13 @@ de dominio (ValueError, RuntimeError, ErrorDeReentrenamiento) y los
 import os
 
 import pandas as pd
-from flask import Flask, jsonify, request
+from flask import Flask, Response, jsonify, request
 from werkzeug.exceptions import HTTPException
 
 from app import model_service
 from app import retrain
 from app import train_model
+from app.docs import DOCS_HTML, OPENAPI_SPEC
 from app.train_model import ErrorDeReentrenamiento, ReentrenamientoEnCurso
 
 # Si el servidor define RETRAIN_TOKEN, POST /retrain exige esta cabecera.
@@ -147,6 +148,7 @@ def _registrar_rutas(app):
             'proyecto': 'API de Predicción de Ocupación - Spa Oasis',
             'descripcion': 'API REST para predecir la ocupación del spa y reentrenar el modelo',
             'endpoints': {
+                'GET /docs': 'Documentación interactiva (Swagger UI)',
                 'GET /health': 'Estado del servicio y del modelo cargado',
                 'GET /predict': (
                     "Predicción de un día y tramo por query string: "
@@ -161,6 +163,15 @@ def _registrar_rutas(app):
                 'POST /retrain/reset': 'Descarta el modelo reentrenado y los CSV subidos',
             },
         })
+
+    @app.get('/docs')
+    def docs_page():
+        """Documentación interactiva (Swagger UI), como el /docs de FastAPI."""
+        return Response(DOCS_HTML, mimetype='text/html')
+
+    @app.get('/openapi.json')
+    def openapi_spec():
+        return jsonify(OPENAPI_SPEC)
 
     @app.get('/health')
     def health():

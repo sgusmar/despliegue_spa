@@ -22,6 +22,23 @@ class PrediccionTests(unittest.TestCase):
         self.assertEqual(respuesta.status_code, 200)
         self.assertIn("proyecto", respuesta.get_json())
 
+    def test_docs_page(self):
+        """La documentación interactiva (Swagger UI) se sirve como HTML."""
+        respuesta = self.cliente.get('/docs')
+        self.assertEqual(respuesta.status_code, 200)
+        self.assertIn('text/html', respuesta.content_type)
+        self.assertIn(b'swagger-ui', respuesta.data.lower())
+
+    def test_openapi_spec(self):
+        """El spec OpenAPI es JSON válido y documenta las rutas reales de la API."""
+        respuesta = self.cliente.get('/openapi.json')
+        self.assertEqual(respuesta.status_code, 200)
+        spec = respuesta.get_json()
+        self.assertEqual(spec['openapi'], '3.0.3')
+        for ruta in ('/health', '/predict', '/predict/single', '/predict/range',
+                     '/retrain', '/retrain/reset'):
+            self.assertIn(ruta, spec['paths'])
+
     def test_health(self):
         """El health check nunca falla, aunque el modelo no esté disponible."""
         respuesta = self.cliente.get('/health')

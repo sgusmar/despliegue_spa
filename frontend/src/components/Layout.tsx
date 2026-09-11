@@ -19,6 +19,13 @@ export default function Layout() {
           </NavLink>
           <NavLink to="/predict">Predicción</NavLink>
           <NavLink to="/retrain">Reentrenar</NavLink>
+          {/* /api/docs, no una ruta de React Router: es la documentación
+              interactiva (Swagger UI) que sirve el backend, una página
+              aparte. <a> normal, no NavLink, para que sea una navegación de
+              verdad y no la intente resolver el router del front. */}
+          <a href="/api/docs" target="_blank" rel="noopener noreferrer">
+            API Docs
+          </a>
         </nav>
       </header>
 
