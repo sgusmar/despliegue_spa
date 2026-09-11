@@ -113,10 +113,10 @@ OPENAPI_SPEC = {
                         "properties": {
                             "current": {"type": "array", "items": {"$ref": "#/components/schemas/DayOccupancy"}},
                             "previousYear": {
-                                "oneOf": [
-                                    {"type": "array", "items": {"$ref": "#/components/schemas/DayOccupancy"}},
-                                    {"type": "null"},
-                                ]
+                                "type": "array",
+                                "items": {"$ref": "#/components/schemas/DayOccupancy"},
+                                "nullable": True,
+                                "description": "null si no hay histórico de ese periodo.",
                             },
                         },
                     }}}},
