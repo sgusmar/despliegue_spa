@@ -62,6 +62,13 @@ interno del modelo y del dataset. En la entrada se aceptan ambas formas.
 
 Descripción de la API y lista de endpoints.
 
+### `GET /docs` — documentación interactiva
+
+Equivalente al `/docs` automático de FastAPI: Swagger UI, servido desde
+`app/docs.py` (`OPENAPI_SPEC` + una página HTML mínima que carga Swagger UI
+desde CDN). El spec en sí vive en `GET /openapi.json`. Sin dependencias
+nuevas en `requirements.txt` a propósito.
+
 ### `GET /health`
 
 Siempre `200`, incluso sin modelo — es un *liveness check*, y devolver error
